@@ -1,0 +1,7 @@
+build/
+dist/
+*.user
+.vs/
+test-output/
+# ONNX Runtime is only the DfnCheck developer test reference (20 MB DLL): in the source zip, not in git
+external/onnxruntime/

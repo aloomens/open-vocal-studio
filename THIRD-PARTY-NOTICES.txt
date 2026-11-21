@@ -1,0 +1,145 @@
+THIRD-PARTY NOTICES
+===================
+
+Open Vocal Studio is free software, Copyright (C) 2026 Al Oomens, distributed under the
+GNU Affero General Public License version 3 (see LICENSE.txt). It is built with the
+components below, each used under a license that permits distribution as part of an
+AGPLv3 work. Their complete source code, or (for the DeepFilterNet3 model) the exact
+files used, are included in the Open Vocal Studio source package (external/ folder).
+
+DeepFilterNet3 model (neural noise removal; enc.onnx, erb_dec.onnx, df_dec.onnx,
+embedded in the plugin)
+  Copyright (c) 2021 Hendrik Schroeter.
+  Used under the MIT License (the project is dual-licensed MIT / Apache-2.0).
+  https://github.com/Rikorose/DeepFilterNet
+  H. Schroeter, A. N. Escalante-B., T. Rosenkranz, A. Maier, "DeepFilterNet: Perceptually
+  Motivated Real-Time Speech Enhancement", Interspeech 2023.
+  Full license texts: LICENSE-DeepFilterNet-MIT.txt and LICENSE-DeepFilterNet-APACHE.txt.
+
+ONNX Runtime 1.32.0 (source package only, NOT part of the program)
+  Copyright (c) Microsoft Corporation. MIT License (external/onnxruntime/LICENSE).
+  Used only by the DfnCheck developer test, as the reference that Open Vocal Studio's own
+  DeepFilterNet3 engine is checked against. The plugin and app don't contain or load it.
+  https://github.com/microsoft/onnxruntime
+
+JUCE 8.0.4
+  Copyright (c) Raw Material Software Limited.
+  Used under the GNU Affero General Public License version 3 (AGPLv3).
+  https://juce.com  -  https://github.com/juce-framework/JUCE
+
+Steinberg VST3 SDK (as bundled with JUCE 8.0.4)
+  (c) Steinberg Media Technologies GmbH.
+  Used under the GNU General Public License version 3 (GPLv3), one of the two licenses
+  the SDK is offered under (the other is the proprietary Steinberg VST3 License).
+  VST is a registered trademark of Steinberg Media Technologies GmbH.
+
+Steinberg ASIO SDK 2.3 (standalone app only)
+  (c) Steinberg Media Technologies GmbH.
+  Used under the GNU General Public License version 3 (GPLv3), one of the two licenses
+  the SDK is offered under (the other is the proprietary Steinberg ASIO License).
+  ASIO is a trademark of Steinberg Media Technologies GmbH.
+
+Libraries included in JUCE and used by Open Vocal Studio
+  zlib                      zlib license, Copyright (c) Jean-loup Gailly and Mark Adler
+  libpng                    libpng/zlib license, Copyright (c) the PNG Reference Library authors
+  HarfBuzz                  "Old MIT" license, Copyright (c) the HarfBuzz authors
+  SheenBidi                 Apache License 2.0, Copyright (c) Muhammad Tayyab Akram
+  The full license text of each library is in its folder under
+  external/JUCE/modules in the source package.
+
+KISS FFT (Source/Fft.h follows its recursive mixed-radix structure and butterflies)
+  Copyright (c) 2003-2010, Mark Borgerding. All rights reserved.
+  Used under the BSD 3-Clause License:
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:
+  * Redistributions of source code must retain the above copyright notice, this list of
+    conditions and the following disclaimer.
+  * Redistributions in binary form must reproduce the above copyright notice, this list
+    of conditions and the following disclaimer in the documentation and/or other
+    materials provided with the distribution.
+  * Neither the author nor the names of any contributors may be used to endorse or
+    promote products derived from this software without specific prior written
+    permission.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND ANY
+  EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL
+  THE COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT
+  OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+  INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+  STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF
+  THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+libFLAC (included in JUCE; reads FLAC files in the standalone app's file player)
+  libFLAC - Free Lossless Audio Codec library
+  Copyright (C) 2000-2009  Josh Coalson
+  Copyright (C) 2011-2023  Xiph.Org Foundation
+  Used under its BSD-style license:
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:
+  - Redistributions of source code must retain the above copyright notice, this list of
+    conditions and the following disclaimer.
+  - Redistributions in binary form must reproduce the above copyright notice, this list
+    of conditions and the following disclaimer in the documentation and/or other
+    materials provided with the distribution.
+  - Neither the name of the Xiph.Org Foundation nor the names of its contributors may be
+    used to endorse or promote products derived from this software without specific
+    prior written permission.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS ``AS IS'' AND ANY
+  EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL
+  THE FOUNDATION OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+Ogg Vorbis: libogg and libvorbis (included in JUCE; read Ogg Vorbis files in the
+standalone app's file player)
+  Copyright (c) 2002-2020 Xiph.org Foundation
+  Used under its BSD-style license:
+  Redistribution and use in source and binary forms, with or without modification, are
+  permitted provided that the following conditions are met:
+  - Redistributions of source code must retain the above copyright notice, this list of
+    conditions and the following disclaimer.
+  - Redistributions in binary form must reproduce the above copyright notice, this list
+    of conditions and the following disclaimer in the documentation and/or other
+    materials provided with the distribution.
+  - Neither the name of the Xiph.org Foundation nor the names of its contributors may be
+    used to endorse or promote products derived from this software without specific
+    prior written permission.
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS ``AS IS'' AND ANY
+  EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+  MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL
+  THE FOUNDATION OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+  EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+  HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+  OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+  SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+  MP3 files are read through Windows' own Windows Media components (wmvcore.dll), which
+  are part of Windows, not of Open Vocal Studio.
+
+Code from Clean Tone Studio (same author, same license)
+  Smoothing, biquad, FDN reverb and smooth delay building blocks.
+
+Algorithms (published research, no code copied)
+  Pitch detection: A. de Cheveigne and H. Kawahara, "YIN, a fundamental frequency
+    estimator for speech and music", JASA 111(4), 2002.
+  Pitch shifting: E. Moulines and F. Charpentier, "Pitch-synchronous waveform processing
+    techniques for text-to-speech synthesis using diphones", Speech Communication 9, 1990
+    (TD-PSOLA).
+  Key detection: C. Krumhansl and E. Kessler, "Tracing the dynamic changes in perceived
+    tonal organization in a spatial representation of musical keys", Psychological
+    Review 89, 1982 (key profiles).
+  Noise estimate: R. Martin, "Noise power spectral density estimation based on optimal
+    smoothing and minimum statistics", IEEE Trans. Speech and Audio Processing 9, 2001.
+  Noise reduction gain: Y. Ephraim and D. Malah, "Speech enhancement using a minimum
+    mean-square error short-time spectral amplitude estimator", IEEE Trans. ASSP 32, 1984
+    (decision-directed a-priori SNR).
+  De-room: K. Lebart, J.-M. Boucher and P. N. Denbigh, "A new method based on spectral
+    subtraction for speech dereverberation", Acta Acustica 87, 2001.
+  Reverb: feedback delay network with frequency-dependent absorption per line after
+    J.-M. Jot and A. Chaigne, "Digital Delay Networks for Designing Artificial
+    Reverberators", AES 90th Convention, 1991.

@@ -1,0 +1,107 @@
+OPEN VOCAL STUDIO {VERSION} - Quick Start (Windows 64-bit)
+==========================================================
+
+What's in this folder
+---------------------
+  Standalone\Open Vocal Studio.exe   The standalone app (sing through your ASIO sound card)
+  VST3\Open Vocal Studio.vst3        The plugin for Cubase or another DAW (a folder - keep it whole)
+  Install VST3.bat                   Copies the plugin into C:\Program Files\Common Files\VST3
+  README.md                          Full manual: signal chain, every control, tests
+  MEASUREMENTS.md                    Measured latency, nulls, true peak, what each part does
+  LICENSE.txt                        GNU Affero General Public License version 3
+  THIRD-PARTY-NOTICES.txt            Licenses for included components (and the files named there)
+
+Runs on any 64-bit Windows 10/11 PC. There's nothing else to install.
+
+New in 1.3.0
+------------
+* Vocal Studio is now called Open Vocal Studio. It's the same plugin (same ID): your projects
+  and presets load as before. Install VST3.bat removes the old "Vocal Studio.vst3"; if you
+  copy the plugin by hand, delete the old one, or your DAW sees two copies.
+* The standalone app asks for its audio device setup once (its settings use the new name).
+* A look shared with Clean Tone Studio and Open Mastering Studio: OPEN VOCAL in white and
+  STUDIO in blue, underlined section titles, knob values with units ("60 %", "+1.5 dB"),
+  and buttons that do something once in normal case (Use Detected, Flat, Open...,
+  Save Processed...).
+* The sound is unchanged.
+
+New in 1.2.6
+------------
+* The standalone app can play a recording through Open Vocal Studio and save it processed: use
+  the FILE strip at the bottom (OPEN..., PLAY, LOOP, SAVE PROCESSED). WAV, AIFF, FLAC, MP3
+  and Ogg files; the saved WAV lines up with the original. LIVE still sings through the
+  sound card as before.
+* The A/B button is now a PROCESSED | ORIGINAL switch: the lit one is what you hear.
+* USE DETECTED confirms the key it set, and is greyed out until a key has been detected.
+* The Doubler goes further: turning it up raises the copies' level, timing drift and slight
+  detuning together. Low settings sound much as before.
+* Your projects and presets load as before.
+
+Measuring with THE_LAB: set Denoise AND Doubler to 0 - see README.md.
+
+New in 1.2.5
+------------
+* New Consonant knob (TONE section, K meter under DYNAMICS): softens the click of hard
+  consonants (K, T, hard C). It starts at 0 %, so your projects sound as before; try 30-50 %
+  on a clicky take.
+* Reverb has a lit OFF / PLATE / ROOM switch, and the controls of a section that's off are
+  dimmed (reverb, delay, pitch correction).
+* The version is shown under the VOCAL STUDIO title and in the standalone app's title bar.
+* The first phrase after a stretch of room tone is no longer squashed by the compressor.
+* Pitch correction leaves whistles and tones above the singing range alone.
+* Your DAW now shows the preset you picked in the plugin window.
+* Your projects and presets load as before.
+
+Measuring with THE_LAB: set Denoise to 0. The denoiser is built to remove noise, steady
+tones and sweeps, which are THE_LAB's test signals - see README.md.
+
+New in 1.2.1
+------------
+* Track mode no longer fades long held notes: its denoiser now protects a sung note the way
+  Mix mode does.
+* Pitch correction stays steady on noisy recordings (it could wander by up to 20 cents).
+* The rider and compressor follow the voice when it gets quieter for good (a quieter take, or
+  the Input turned down); before, the compressor could stop compressing until the voice got
+  loud again.
+* Your projects and presets load as before.
+
+New in 1.2.0
+------------
+* Stopping and starting your DAW no longer changes the vocal's level for the next few seconds.
+* The rider no longer turns up fading phrase ends and breaths.
+* A constant buzz or hum is removed again (1.1.0 could protect it as if it were a voice);
+  long held notes keep more of their level.
+* Your projects and presets load as before.
+
+New in 1.1.0
+------------
+* The neural denoiser now runs inside the plugin itself (no ONNX Runtime DLL), frame by frame:
+  Mix-mode latency drops from about 0.64 s to about 170 ms, and the plugin never allocates
+  memory while playing and gives exactly the same result on every run and buffer size.
+* Long, steady notes and tones are no longer thinned by the denoiser or the resonance control.
+* Pitch correction leaves the first 60 ms of each note alone and drifts back into exact
+  alignment with the input after a correction (fixes an inverted-looking sweep in THE_LAB).
+* No DC offset from pitch correction (the rumble filter now comes after it).
+* Your projects and presets load as before.
+
+First steps
+-----------
+1. Insert Open Vocal Studio on your lead vocal track.
+2. Choose a preset (Natural Polish is the default).
+3. Click ANALYZE, play 10-30 seconds of the vocal, click ANALYZE again: it sets the tone EQ
+   and the key for pitch correction.
+4. Use PROCESSED | ORIGINAL to hear the untouched input at the same loudness.
+
+Mix mode vs Track mode
+----------------------
+Mix (best quality) uses the neural denoiser and has about 170 ms of latency, which your DAW
+compensates automatically - use it for mixing. While RECORDING through the plugin, switch to
+Track (low latency, 6 ms; 55 ms with pitch correction on) or use the "Tracking" preset.
+
+License
+-------
+Open Vocal Studio is free software under the GNU Affero General Public License version 3
+(LICENSE.txt). Copyright (C) 2026 Al Oomens. You may use it for anything and share it freely.
+When you share it, pass on this zip together with the source code zip
+(OpenVocalStudio-{VERSION}-source.zip). It comes with NO WARRANTY.
+Click the OPEN VOCAL STUDIO title in the plugin for the license notice.
