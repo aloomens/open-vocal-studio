@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(VocalStudio VERSION 1.3.0 LANGUAGES C CXX)
+project(VocalStudio VERSION 1.3.1 LANGUAGES C CXX)
 
 # Product name shown to users (files, window, DAW). The CMake target, the plugin codes (Vcst / Vcsp)
 # and the saved-state tag must never change, so the VST3 IDs stay the same and old projects load.

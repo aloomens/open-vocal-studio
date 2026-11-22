@@ -80,9 +80,9 @@ AudioProcessorValueTreeState::ParameterLayout VocalStudioAudioProcessor::createL
     l.add (pct (IDs::deroom, "De-room", 0));
     l.add (pct (IDs::deplosive, "De-plosive", 50));
     l.add (bo (IDs::pitchOn, "Pitch Correction", true));
-    l.add (pct (IDs::pitchStrength, "Pitch Strength", 70));
-    l.add (pct (IDs::pitchSpeed, "Pitch Speed", 35));
-    l.add (fl (IDs::pitchTolerance, "Pitch Tolerance", 0, 50, 0.5f, 8, "cents"));
+    l.add (pct (IDs::pitchStrength, "Pitch Strength", 85));      // 1.3.1: the most natural (VocalTest --diag-defaults)
+    l.add (pct (IDs::pitchSpeed, "Pitch Speed", 45));
+    l.add (fl (IDs::pitchTolerance, "Pitch Tolerance", 0, 50, 0.5f, 5, "cents"));
     l.add (ch (IDs::key, "Key", kKeys, 0));
     l.add (ch (IDs::scale, "Scale", scaleNames(), 0));
     for (int pc = 0; pc < 12; ++pc) l.add (bo (IDs::note (pc), String ("Note ") + kKeys[pc], true));
@@ -180,6 +180,7 @@ void VocalStudioAudioProcessor::configure()
     deplosive.prepare (fs, mixMode ? (int) std::lround (0.003 * fs) : 0);
     pitch.prepare (fs, maxBlock, mixMode ? 60.0 : 100.0);
     pitchInChain = mixMode || pitchOn;
+    if (fs != keyFs) { keyChroma.prepare (fs); keyFs = fs; }      // (a mode switch keeps what it has heard)
     spectral.prepare (fs, ! mixMode);
     eq.prepare (fs);
     rider.prepare (fs);
@@ -315,6 +316,10 @@ void VocalStudioAudioProcessor::processChunk (float* const* io, int numIn, int n
     meters.in.store (vs::gainToDb (peakIn));
 
     float* x = mono.data();
+    // key detection hears the input before any cleanup (the speech-trained denoiser would take most of
+    // a full mix away). Outside ANALYZE it forgets with a ~60 s time constant, so it follows the song.
+    keyChroma.push (x, n);
+    if (! spectral.isAnalyzing()) keyChroma.decay (std::exp (-(double) n / (60.0 * fs)));
     if (dfnActive) dfn.process (x, n);
     deplosive.process (x, n);
     if (pitchInChain) pitch.process (x, n);
@@ -386,7 +391,7 @@ void VocalStudioAudioProcessor::processChunk (float* const* io, int numIn, int n
 //==============================================================================
 void VocalStudioAudioProcessor::startAnalyze()
 {
-    pitch.keys.reset();
+    keyChroma.requestClear();
     spectral.setAnalyzing (true);
 }
 
@@ -402,7 +407,7 @@ String VocalStudioAudioProcessor::stopAnalyzeAndApply()
         if (auto* prm = apvts.getParameter (IDs::eq (b))) prm->setValueNotifyingHost (prm->convertTo0to1 (gains[(size_t) b]));
     String msg = "EQ matched from " + String (secs, 0) + " s of voice";
     int key; bool minor; float conf;
-    pitch.keys.best (key, minor, conf);
+    keyChroma.detect (key, minor, conf);
     if (detectedKeyUsable())
     {
         applyDetectedKey();
@@ -414,9 +419,12 @@ String VocalStudioAudioProcessor::stopAnalyzeAndApply()
 
 bool VocalStudioAudioProcessor::detectedKeyUsable() const
 {
+    // at least 4 s of music, and not a near-tie: the key ahead of the runner-up by 0.015 in correlation
+    // (confidence 0.15). VocalTest --diag-key: when right the lead is typically 0.2, a sparse melody such
+    // as "Mary Had a Little Lamb" about 0.02; songs it gets wrong lead by at most about 0.06.
     int key; bool minor; float conf;
-    pitch.keys.best (key, minor, conf);
-    return pitch.keys.total() > 2.0 && conf > 0.15f;
+    keyChroma.detect (key, minor, conf);
+    return keyChroma.activeSeconds() > 4.0 && conf >= 0.15f;
 }
 
 bool VocalStudioAudioProcessor::applyDetectedKey()
@@ -425,7 +433,7 @@ bool VocalStudioAudioProcessor::applyDetectedKey()
     // otherwise report C major
     if (! detectedKeyUsable()) return false;
     int key; bool minor; float conf;
-    pitch.keys.best (key, minor, conf);
+    keyChroma.detect (key, minor, conf);
     if (auto* k = apvts.getParameter (IDs::key)) k->setValueNotifyingHost (k->convertTo0to1 ((float) key));
     if (auto* s = apvts.getParameter (IDs::scale)) s->setValueNotifyingHost (s->convertTo0to1 (minor ? 2.0f : 1.0f));
     return true;

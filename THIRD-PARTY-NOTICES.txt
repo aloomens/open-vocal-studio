@@ -130,9 +130,11 @@ Algorithms (published research, no code copied)
   Pitch shifting: E. Moulines and F. Charpentier, "Pitch-synchronous waveform processing
     techniques for text-to-speech synthesis using diphones", Speech Communication 9, 1990
     (TD-PSOLA).
-  Key detection: C. Krumhansl and E. Kessler, "Tracing the dynamic changes in perceived
-    tonal organization in a spatial representation of musical keys", Psychological
-    Review 89, 1982 (key profiles).
+  Key detection: E. Gomez, "Tonal description of music audio signals", PhD thesis,
+    Universitat Pompeu Fabra, 2006 (harmonic pitch-class profile); D. Temperley, "Music
+    and Probability", MIT Press, 2007 (major / minor key profiles from the Kostka-Payne
+    corpus, used as published numbers); C. Krumhansl, "Cognitive Foundations of Musical
+    Pitch", Oxford University Press, 1990 (matching by correlation with the 24 profiles).
   Noise estimate: R. Martin, "Noise power spectral density estimation based on optimal
     smoothing and minimum statistics", IEEE Trans. Speech and Audio Processing 9, 2001.
   Noise reduction gain: Y. Ephraim and D. Malah, "Speech enhancement using a minimum

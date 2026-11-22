@@ -13,6 +13,17 @@ What's in this folder
 
 Runs on any 64-bit Windows 10/11 PC. There's nothing else to install.
 
+New in 1.3.1
+------------
+* Key detection finds the right key: it reads the whole spectrum (so a full mix works too),
+  or the sung notes of a solo voice, with better key profiles and the tuning estimated. A
+  song in C that read as D minor now reads as C major.
+* Pitch correction handles legato: a note reached by a smooth glide is corrected at once,
+  without pulling toward the notes in between or overshooting. Corrections no longer lag
+  behind the voice, and Speed 100 flattens vibrato instead of widening it.
+* New, more natural defaults: Strength 85 %, Speed 45 %, Tolerance 5 cents (also in the
+  Natural Polish preset). Your projects keep their own settings.
+
 New in 1.3.0
 ------------
 * Vocal Studio is now called Open Vocal Studio. It's the same plugin (same ID): your projects

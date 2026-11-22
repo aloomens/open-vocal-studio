@@ -8,14 +8,21 @@
 //    scoops and fast slides stay as sung; only the center is pulled toward the nearest allowed
 //    note. Fast pitch movement (slides) fades the correction out; a tolerance leaves small
 //    deviations alone; strength sets how far it goes. Hysteresis keeps it from flipping notes.
+//    Each note is a segment: it starts after silence, at a jump, or (legato) when the voice has
+//    moved well away from the center and settled there - the center then starts at the new pitch
+//    instead of gliding over from the old note (which pulled toward the notes in between).
+//    Decisions are applied a little later than they are made (the 20-40 ms the grain placement
+//    needs anyway): each frame gets the correction worked out with what follows in its own note,
+//    which takes most of the lag out of the center (no overshoot when the voice drifts, and fast
+//    Speed settings flatten vibrato instead of widening it).
 // 3. Pitch shifting: TD-PSOLA (Moulines & Charpentier 1990). Grains two periods long are cut at
 //    pitch-synchronous marks (aligned by cross-correlation) and laid down at the new spacing, so
 //    the formants - the character of the voice - stay where they are. Grains are placed with
 //    windowed-sinc fractional positioning (no jitter). Ratio 1 reproduces the input exactly.
-// 4. Key detection: duration-weighted pitch-class histogram matched against the Krumhansl-Kessler
-//    major/minor key profiles.
+// (Key detection is in KeyChroma.h: it reads the whole spectrum, so it also works on a full mix.)
 
 #include "Base.h"
+#include "KeyChroma.h"
 #include <atomic>
 
 namespace vs
@@ -48,63 +55,14 @@ struct Scales
 };
 
 //==============================================================================
-// Key detection from a pitch-class histogram (Krumhansl & Kessler 1982 profiles).
-class KeyDetector
-{
-public:
-    void reset() { hist.fill (0.0); }
-    void add (double midi, double weight)
-    {
-        const int pc = (((int) std::lround (midi)) % 12 + 12) % 12;
-        hist[(size_t) pc] += weight;
-    }
-    void decay (double factor) { for (auto& h : hist) h *= factor; }
-    double total() const { double s = 0; for (auto h : hist) s += h; return s; }
-
-    // returns key 0..11, minor flag, confidence 0..1
-    void best (int& key, bool& minor, float& confidence) const
-    {
-        static const double maj[12] = { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 };
-        static const double mnr[12] = { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 };
-        double b1 = -2, b2 = -2; key = 0; minor = false;
-        for (int m = 0; m < 2; ++m)
-            for (int k = 0; k < 12; ++k)
-            {
-                double p[12];
-                for (int i = 0; i < 12; ++i) p[i] = (m ? mnr : maj)[(i - k + 12) % 12];
-                const double r = corr (p);
-                if (r > b1) { b2 = b1; b1 = r; key = k; minor = m == 1; }
-                else if (r > b2) b2 = r;
-            }
-        confidence = total() <= 0 ? 0.0f : (float) std::clamp ((b1 - b2) * 5.0, 0.0, 1.0);
-    }
-
-    std::array<double, 12> hist {};
-private:
-    double corr (const double* p) const
-    {
-        double mh = 0, mp = 0;
-        for (int i = 0; i < 12; ++i) { mh += hist[(size_t) i]; mp += p[i]; }
-        mh /= 12; mp /= 12;
-        double sxy = 0, sxx = 0, syy = 0;
-        for (int i = 0; i < 12; ++i)
-        {
-            const double a = hist[(size_t) i] - mh, b = p[i] - mp;
-            sxy += a * b; sxx += a * a; syy += b * b;
-        }
-        return sxx <= 0 ? 0.0 : sxy / std::sqrt (sxx * syy);
-    }
-};
-
-//==============================================================================
 class PitchCorrector
 {
 public:
     struct Params
     {
-        float strength = 0.8f;     // 0..1
-        float speed = 0.35f;       // 0 = very slow (only long-term intonation) .. 1 = fast
-        float toleranceCents = 10.0f;
+        float strength = 0.85f;    // 0..1   (the plugin's defaults: VocalTest --diag-defaults)
+        float speed = 0.45f;       // 0 = very slow (only long-term intonation) .. 1 = fast
+        float toleranceCents = 5.0f;
         int key = 0, scale = 0;
         int noteMask = 0xfff;      // allowed pitch classes (absolute, bit 0 = C)
         float refA4 = 440.0f;
@@ -125,6 +83,11 @@ public:
         // output waits for: grain reach (1.25 P) + two marks ahead (2.3 P) + the YIN window half (1 P)
         latency = (int) std::ceil (4.6 * pMax) + kTaps + hop;
         unvStep = std::max (32, (int) std::lround (fs * 0.005));
+        // How late a frame's ratio may be decided: the synthesis reads frames up to latency - maxR
+        // behind the input, the analysis knows them up to half a YIN span behind it. The difference
+        // (minus two hops of margin) is free lookahead: 35 ms with the 60 Hz floor (Mix mode), 20 ms
+        // with 100 Hz (Track mode), at 48 kHz.
+        lookahead = std::max (0, (int) std::floor ((latency - maxR - 0.5 * (winD + maxLagD) * dec) / hop) - 2);
 
         int s = 1; while (s < latency * 4 + maxBlock + 8192) s <<= 1;
         inBuf.assign ((size_t) s, 0.0f); inMask = s - 1;
@@ -162,6 +125,8 @@ public:
         outPos = -latency;
         c1 = c2 = cPrev = 0.0; slope = 0.0; corr = 0.0; note = -1000; wasVoiced = false;
         jumpM = jumpTime = goodPeriod = mAcc = 0.0;
+        decidedCount = 0; segCount = 0; awayTime = 0.0; recent.fill (0.0); recentN = 0;
+        lastDev = lastTf = 0.0f;
         curMidi.store (0.0f); curCorrCents.store (0.0f); curNote.store (-1);
     }
 
@@ -169,7 +134,6 @@ public:
     void setEnabled (bool e) { enabled = e; }
     int getLatency() const { return latency; }
 
-    KeyDetector keys;            // fed with stable, voiced pitch (read on the message thread: benign race)
     std::atomic<float> curMidi { 0.0f }, curCorrCents { 0.0f };
     std::atomic<int> curNote { -1 };
     int64_t statShifted = 0, statPulled = 0;     // tests: shifted grains, and those drifting onto the grid
@@ -214,7 +178,14 @@ private:
     static constexpr int kTaps = 16, kPhases = 512, kMarkRing = 4096, kFrameRing = 4096;
 
     struct Mark { int64_t pos = 0; float period = 0; bool voiced = false; int64_t seg = 0; };   // seg: first mark of its voiced run
-    struct Frame { double center = 0; float period = 0; float ratio = 1; bool voiced = false; };
+    // ratio is decided 'lookahead' frames after the frame is analyzed; dev / tf / vt / seg are what the
+    // analysis worked out for it (semitones to the note after the tolerance, slide fade, time since the
+    // note began, and which note it belongs to)
+    struct Frame
+    {
+        double center = 0; float period = 0; float ratio = 1; bool voiced = false;
+        float dev = 0, tf = 0, vt = 0; int64_t seg = -1;
+    };
 
     //---------------------------------------------------------------- analysis (every hop)
     void analyze()
@@ -280,10 +251,11 @@ private:
             }
         }
         fr.voiced = voiced && periodFull > 0.0;
-        fr.ratio = (float) decide (fr.voiced, periodFull);    // may replace an octave-slip period
+        evaluate (fr, periodFull);                     // may replace an octave-slip period
         fr.period = (float) periodFull;
         frames[(size_t) (frameCount & (kFrameRing - 1))] = fr;
         ++frameCount;
+        finalize();
     }
 
     // full-rate difference function around the coarse lag, parabolic interpolation
@@ -318,21 +290,21 @@ private:
     }
 
     //---------------------------------------------------------------- note decisions
-    double decide (bool voiced, double& period)
+    // As each frame is analyzed: where is the note's center, which note is it heading for, and how far
+    // is that (dev, after the tolerance)? The ratio itself is decided later, in finalize().
+    void evaluate (Frame& fr, double& period)
     {
         const double dt = (double) hop / sr;
-        if (! voiced)
+        if (! fr.voiced)
         {
-            wasVoiced = false; jumpTime = 0.0;
-            corr += (1.0 - std::exp (-dt / 0.015)) * (0.0 - corr);
+            wasVoiced = false; jumpTime = 0.0; awayTime = 0.0;
             curNote.store (-1);
-            return std::pow (2.0, corr / 12.0);
+            return;
         }
         const double f0 = sr / period;
         const double m = 69.0 + 12.0 * std::log2 (f0 / params.refA4);
         // A sudden jump away from the last reading doesn't move anything at once: a tracking slip in
-        // noise or breath lasts a frame or two, a real note change (legato) holds - taken over after
-        // 30 ms. (Slides move continuously, a little per frame, and are followed as before.)
+        // noise or breath lasts a frame or two, a real note change holds - taken over after 30 ms.
         if (wasVoiced && voicedTime > 0.02 && std::abs (m - mAcc) > 0.8)
         {
             if (jumpTime > 0.0 && std::abs (m - jumpM) < 0.5) jumpTime += dt;
@@ -343,7 +315,8 @@ private:
                 // the grain marks: keep the last good period for them
                 for (double h : { 2.0, 3.0, 4.0, 5.0, 0.5 })
                     if (std::abs (m - (mAcc - 12.0 * std::log2 (h))) < 0.3) { period = goodPeriod; break; }
-                return std::pow (2.0, corr / 12.0);
+                fr.dev = lastDev; fr.tf = lastTf; fr.vt = (float) voicedTime; fr.seg = segCount;   // as before the slip
+                return;
             }
             wasVoiced = false;                       // a new note: start over below
         }
@@ -351,9 +324,20 @@ private:
         mAcc = m;
         goodPeriod = period;
         curMidi.store ((float) m);
-        if (! wasVoiced) { c1 = c2 = cPrev = m; slope = 0.0; note = -1000; voicedTime = 0.0; }
+        recent[(size_t) (recentN++ % kRecent)] = m;
+        if (! wasVoiced) startNote (m, 0.0);
         wasVoiced = true;
         voicedTime += dt;
+        // Legato: the voice has left the note's center by more than 0.6 semitone for 60 ms and has
+        // settled (its last 25 ms within a quarter tone): a new note, centered where it settled.
+        // (Vibrato, even +-1 semitone wide, never stays out that far for 60 ms.)
+        awayTime = std::abs (m - c2) > 0.6 ? awayTime + dt : 0.0;
+        if (awayTime >= 0.06 && recentN >= kRecent)
+        {
+            double lo = 1e9, hi = -1e9, sum = 0.0;
+            for (double r : recent) { lo = std::min (lo, r); hi = std::max (hi, r); sum += r; }
+            if (hi - lo < 0.25) startNote (sum / kRecent, 0.06);   // (correction fades in over the next 40 ms)
+        }
         // note center: two-pole average; speed 0..1 -> 300 ms .. 25 ms
         const double tau = 0.300 * std::pow (0.025 / 0.300, (double) params.speed);
         const double k = 1.0 - std::exp (-dt / tau);
@@ -374,17 +358,44 @@ private:
         double dev = note - c;
         const double tol = params.toleranceCents / 100.0;
         dev = dev > 0 ? std::max (0.0, dev - tol) : std::min (0.0, dev + tol);
-        // the first 60 ms of a note are left alone: scoops into notes are natural, and the slope
-        // estimate needs that long to tell a held note from a glide
-        const double onset = std::clamp ((voicedTime - 0.06) / 0.04, 0.0, 1.0);
-        double target = enabled ? params.strength * tf * onset * dev : 0.0;
-        target = std::clamp (target, -2.0, 2.0);
-        corr += (1.0 - std::exp (-dt / 0.012)) * (target - corr);
-        if (std::abs (corr) < 1e-7 && target == 0.0) corr = 0.0;
-        curCorrCents.store ((float) (corr * 100.0));
-        // key histogram: stable sung notes only
-        if (slope < 2.0) keys.add (c, dt);
-        return std::pow (2.0, corr / 12.0);
+        fr.dev = lastDev = (float) dev; fr.tf = lastTf = (float) tf; fr.vt = (float) voicedTime; fr.seg = segCount;
+    }
+
+    void startNote (double m, double startTime)
+    {
+        c1 = c2 = cPrev = m; slope = 0.0; note = -1000; voicedTime = startTime; awayTime = 0.0;
+        ++segCount;
+    }
+
+    // Decide the ratio of the frame 'lookahead' frames back. Its correction is the one worked out at the
+    // latest frame of the same note within that lookahead: by then the two-pole center has caught up
+    // by those 20-40 ms. The first 60 ms of a note stay as sung (scoops into notes are natural, and the
+    // slope estimate needs that long to tell a held note from a glide); a legato note fades in over 40 ms.
+    void finalize()
+    {
+        const double dt = (double) hop / sr;
+        while (decidedCount < frameCount - lookahead)
+        {
+            Frame& f = frames[(size_t) (decidedCount & (kFrameRing - 1))];
+            double target = 0.0;
+            if (f.voiced && enabled)
+            {
+                const Frame* src = &f;
+                for (int64_t k = decidedCount + 1; k < frameCount && k <= decidedCount + lookahead; ++k)
+                {
+                    const Frame& g = frames[(size_t) (k & (kFrameRing - 1))];
+                    if (! g.voiced || g.seg != f.seg) break;
+                    src = &g;
+                }
+                const double onset = std::clamp ((f.vt - 0.06) / 0.04, 0.0, 1.0);
+                target = std::clamp ((double) params.strength * src->tf * onset * src->dev, -2.0, 2.0);
+            }
+            corr += (1.0 - std::exp (-dt / (f.voiced ? 0.012 : 0.015))) * (target - corr);
+            if (std::abs (corr) < 1e-7 && target == 0.0) corr = 0.0;
+            f.ratio = (float) std::pow (2.0, corr / 12.0);
+            curCorrCents.store ((float) (corr * 100.0));
+            ++decidedCount;
+        }
     }
 
     int allowedMask() const
@@ -437,6 +448,12 @@ private:
     {
         const double off = (double) hop - 0.5 * (winD + maxLagD) * dec;
         return (double) (frameCount - 1) * hop + off;
+    }
+    // is the ratio at time t decided yet (both frames it is interpolated between)?
+    bool decided (double t) const
+    {
+        const double off = (double) hop - 0.5 * (winD + maxLagD) * dec;
+        return (int64_t) std::floor ((t - off) / hop) + 1 < decidedCount;
     }
 
     //---------------------------------------------------------------- analysis marks
@@ -506,7 +523,7 @@ private:
             const Mark& m0 = mk (mi);
             const Mark& m1 = mk (mi + 1);
             Frame f;
-            if (! track (synth, f)) break;
+            if (! track (synth, f) || ! decided (synth)) break;
             // nearest analysis mark
             const bool nearFirst = (synth - (double) m0.pos) <= ((double) m1.pos - synth);
             const int64_t ai = nearFirst ? mi : mi + 1;
@@ -633,6 +650,11 @@ private:
     Params params;
     bool enabled = true, wasVoiced = false;
     double c1 = 0, c2 = 0, cPrev = 0, slope = 0, corr = 0, voicedTime = 0, jumpM = 0, jumpTime = 0, goodPeriod = 0, mAcc = 0;
+    static constexpr int kRecent = 10;            // the last 25 ms of pitch readings (2.5 ms hops)
+    std::array<double, kRecent> recent {}; int64_t recentN = 0;
+    int64_t decidedCount = 0, segCount = 0;       // frames whose ratio is decided; notes started
+    int lookahead = 0;                            // frames between analysis and decision
+    double awayTime = 0.0; float lastDev = 0.0f, lastTf = 0.0f;
     int note = -1000;
 };
 } // namespace vs

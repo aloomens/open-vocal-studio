@@ -1,4 +1,4 @@
-# Open Vocal Studio 1.3.0 (VST3 + standalone)
+# Open Vocal Studio 1.3.1 (VST3 + standalone)
 
 A complete lead-vocal channel for Windows in one plugin. It cleans up the recording (noise, room, plosives), corrects the pitch naturally, tames resonances, sibilance and harshness, sets the tone, controls the dynamics and adds a plate or room reverb and a short delay synced to your DAW.
 
@@ -24,6 +24,37 @@ It's built with JUCE (AGPLv3), the Steinberg VST3 and ASIO SDKs (GPLv3) and the 
 3. Play 10–30 seconds of the vocal with **ANALYZE** on, then click it again. It sets the tone EQ to match a polished vocal curve and sets the key and scale for pitch correction.
 4. Use the **PROCESSED | ORIGINAL** switch at the top to compare. The lit button is what you hear: PROCESSED (green) is Open Vocal Studio's sound, ORIGINAL (gold) is the untouched input. The original is level-matched, so louder never fools you into thinking it's better.
 5. In the standalone app you can also open a recording, play it through Open Vocal Studio and save it processed (see **FILE** below).
+
+## What's new in 1.3.1
+
+- **Key detection finds the right key.** A song in C, whose vocal sits on D for much of the time, read as D minor. Two things went wrong:
+  - the detector listened only to the sung melody, one pitch at a time, so on chords or a full mix it heard phantom low notes;
+  - it matched that against Krumhansl & Kessler's 1982 key profiles, which take a heavily used second note (D in C major) for a minor tonic.
+
+  Now:
+  - it reads the key from the whole spectrum of the input, before any cleanup, so a full mix works too;
+  - when it hears a solo voice, it counts the sung notes themselves instead;
+  - it matches against Temperley's 2007 key profiles, which give a major key's second note real weight;
+  - it estimates the tuning, so a song at A = 432 Hz lands right;
+  - outside ANALYZE it slowly forgets (about a minute), so the "Detected" key follows the song that's playing.
+
+  On the vocal that read as D minor, it now says C major. On synthetic melodies, chords and songs in all 12 keys it gets 364 of 408 right; the old method got 189 of 300 on the first three of those sets. The "% sure" next to the detected key now reads 100 % when the key clearly leads; ANALYZE and **Use Detected** set it from 15 %.
+- **Pitch correction handles legato.** After a smooth glide to a new note, the slowly moving note center used to drift over from the old note: for a moment the voice was pulled toward the notes in between, then past the new one, and the new note was corrected only after about half a second. Now a glide that settles on a new pitch starts a new note right there:
+  - a note 20 cents sharp after a glide is corrected to 0.2 cents (was +19);
+  - the largest overshoot after a note change is 4.6 cents (was 23.6).
+- **Corrections arrive on time.** Each decision now uses the 20–40 ms of what follows in the same note, which the grain placement had to wait for anyway (the latency is unchanged):
+  - after a scoop into a note, the overshoot is 2.3 cents (was 13.9);
+  - on a slow drift within a note, 10 cents (was 15);
+  - **Speed** at 100 % now flattens vibrato (to 55 %) as a fast setting should; it used to widen it (to 112 %).
+- **New, more natural defaults: Strength 85 %, Speed 45 %, Tolerance 5 cents** (were 70 %, 35 %, 8 cents), and so in the Natural Polish preset:
+  - Speed 45 % is the fastest setting that still leaves vibrato alone (99 %); slower settings don't keep more of the singing, they only lag more;
+  - a note 30 cents off now ends 9 cents off (was 15), one 15 cents off ends about 6 cents off, and notes within 5 cents are left alone.
+
+  Your projects keep their own settings; the other presets keep their own pitch character.
+- **Measured with THE_LAB:**
+  - with pitch correction off, every number is the same as 1.3.0;
+  - with it on, buffer sizes, recall, sessions and knob moves are all exact or clean;
+  - its distortion warning with pitch correction on is the test tone being corrected (999.76 Hz is 21 cents above B5 and moves 13.6 cents toward it). See "Measuring Open Vocal Studio with THE_LAB".
 
 ## What's new in 1.3.0
 
@@ -70,12 +101,16 @@ All of this is by design: making those runs pass would make the denoiser worse a
 
 **To measure the channel itself, set Denoise and Doubler to 0** (Doubler is 0 in every preset except Pop Lead). That's how every clean run below was made:
 
-- 1.2.5, both modes, pitch correction on or off, and 1.2.6 and 1.3.0 in Mix mode: Stress GOOD, Software GOOD, 0 extremes failures;
+- 1.2.5, both modes, pitch correction on or off; 1.2.6 and 1.3.0 in Mix mode; 1.3.1 in Mix mode with pitch correction on or off and in Track mode with it on: Stress GOOD, Software GOOD, 0 extremes failures;
 - exact latency and bypass;
 - identical output at every buffer size;
 - sample rates within 0.3 dB.
 
 This also explains two older THE_LAB findings I couldn't reproduce at the time: the 96 vs 48 kHz difference (1.1.0) and the −16 dB Track-mode sweep (1.2.0). Both disappear at Denoise 0.
+
+**With pitch correction on**, THE_LAB's distortion test warns, and in Track mode calls it aliasing. That's its 999.76 Hz test tone being corrected: it sits 21 cents above B5, so at the default settings it moves 13.6 cents to 991.7 Hz. THE_LAB still measures at 999.76 Hz, where little is left, so its "THD" and "spur" figures there are about 30 dB too high. Rendered here, the moved tone's second harmonic is at −51 dB (`VocalTest --diag-labtone`). Turn pitch correction off to measure the rest of the channel.
+
+In Track mode, a 6.3 kHz tone also shows tiny spurs every 750 Hz below it, at −87 dB and lower. They come from the low-latency spectral stage's 64-sample frames (resonance, smooth, de-ess), not from pitch correction, and Mix mode has none.
 
 With the Doubler at 100 %, the parts THE_LAB can judge are clean too: no clicks when controls move, identical output at every buffer size, after recall and in two instances, and sample rates within 0.5 dB.
 
@@ -176,15 +211,21 @@ Natural pitch correction: it corrects the **center** of each note and leaves how
 
 - **Pitch tracking:** YIN at about 12 kHz, refined at the full sample rate, so it's sub-cent accurate up to high notes. It works on a high-passed copy of the input, so low-frequency noise can't pull it sharp. A reading that jumps away for a frame or two (an octave slip in noise or breath) is ignored.
 - **Note center:** a slow average of the sung pitch is pulled toward the nearest allowed note. Vibrato, scoops and expressive bends stay exactly as sung.
+- **Notes:** each note starts after silence, at a jump, or (legato) where a glide settles on a new pitch; its center starts there instead of drifting over from the previous note. The first 60 ms of a note stay as sung (scoops are natural).
 - **Slides** (pitch moving faster than about 4 semitones/s) fade the correction out, so glides between notes sound natural.
-- **Shifting:** TD-PSOLA. It shifts the pitch without moving the formants, so the voice keeps its character, with sub-sample grain placement. With Strength at 0 the corrector is bit-transparent.
+- **Timing:** each correction is worked out with the next 20–40 ms of the same note (the time the grain placement needs anyway), so the center doesn't lag behind the voice.
+- **Shifting:** TD-PSOLA. It shifts the pitch without moving the formants, so the voice keeps its character, with sub-sample grain placement. With Strength at 0 the corrector is bit-transparent. On a sung voice, its result is as clean as a perfect re-synthesis at the new pitch.
 
 The controls:
 
-- **Strength**: how far an off note is pulled. 100% means all the way.
-- **Speed**: how quickly the correction follows. Low settings fix only the long-term intonation, the most invisible kind.
-- **Tolerance**: deviations smaller than this many cents are left alone.
-- **Key / Scale**: choose from Chromatic, Major, Minor, Harmonic Minor, Melodic Minor, Major and Minor Pentatonic, Blues, Dorian and Mixolydian. **ANALYZE** or **Use Detected** sets them from the Krumhansl–Kessler key detector. Use Detected copies the key once, and is greyed out until a key has been detected; the detected key is shown next to it.
+- **Strength** (default 85 %): how far an off note is pulled. 100 % means all the way.
+- **Speed** (default 45 %): how quickly the correction follows. Up to about 45 % vibrato stays as sung; low settings fix only the long-term intonation but lag more; high settings tighten the pitch and flatten vibrato (100 % leaves about half of it).
+- **Tolerance** (default 5 cents): deviations smaller than this are left alone.
+- **Key / Scale**: choose from Chromatic, Major, Minor, Harmonic Minor, Melodic Minor, Major and Minor Pentatonic, Blues, Dorian and Mixolydian. **ANALYZE** or **Use Detected** sets them from the key detector:
+  - it reads the input's spectrum (harmonic pitch-class profile, tuning estimated), or the sung notes when it hears a solo voice;
+  - it matches that against Temperley's key profiles;
+  - the detected key and how sure it is are shown next to **Use Detected**, which copies the key once and is greyed out until a key is clear enough;
+  - outside ANALYZE it follows roughly the last minute of music.
 - **Note buttons**: turn a note off to keep the correction away from it.
 - **Readout**: the current note and how many cents are being corrected.
 
@@ -263,6 +304,19 @@ Measured results are in [Reports/measurements.md](Reports/measurements.md). Run 
   - pitch correction leaves tones above the singing range alone;
   - after a pitch setting moves and returns, a steady tone lines up with an untouched copy again;
   - Analyze finds the key and fixes the tone of a deliberately boxy, dull voice; Use Detected leaves Key and Scale alone until a key has been detected.
+- **Key detection:**
+  - ANALYZE finds the key of a song in C whose verse leans on D, F and A (1.3.0 said D minor), of a melody over chords in E minor, of a song tuned to A = 432 Hz, and of chords alone in Track mode;
+  - a solo melody ("Mary Had a Little Lamb") is right in all 12 keys;
+  - the running detected key follows a change of song.
+
+  `VocalTest.exe --diag-key` compares methods on 408 tests in all 12 keys; `--diag-keyfile <files>` reads recordings.
+- **Natural correction:** on sung phrases with known pitch curves,
+  - notes reached by a glide are corrected and not overshot;
+  - vibrato is kept at the default Speed and flattened at 100 %;
+  - scoops stay as sung;
+  - a slow drift is followed without a large overshoot.
+
+  `--diag-natural` and `--diag-defaults` have the full measurements, and `--diag-labtone` renders THE_LAB's distortion tones.
 - **File player (standalone):** a played file gives exactly the same output as the same audio through the input; Save Processed matches live processing sample for sample with the latency taken out; a 44.1 kHz file plays at the right pitch and level at 48 kHz. `VocalTest.exe --diag-load <files>` opens files with the app's loader (WAV, AIFF and FLAC load bit-exact).
 - **Recall and CPU:** state recall and the CPU cost per mode.
 

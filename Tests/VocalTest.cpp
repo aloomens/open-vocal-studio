@@ -10,6 +10,8 @@
 #include <cstdio>
 #include <chrono>
 #include <functional>
+#include <map>
+#include <string>
 
 using namespace testsig;
 
@@ -1390,6 +1392,485 @@ void diagnoseExtremes()
 }
 
 // --diag-psola: the pitch corrector alone; tolerance 50 cents for 2 s, then back: null vs untouched
+//==============================================================================
+// --diag-natural: how natural the pitch correction is, measured on sung phrases with known pitch curves
+namespace natdiag
+{
+    inline double nan() { return std::numeric_limits<double>::quiet_NaN(); }
+    inline bool gLog = false;      // print the corrector's decisions while it runs
+    // pitch track (MIDI) every 5 ms; NaN where unvoiced
+    inline std::vector<double> midiTrack (const std::vector<float>& x, double fs, std::vector<double>& times)
+    {
+        const auto f = yinTrack (x, fs, 0.005, times);
+        std::vector<double> m (f.size());
+        for (size_t i = 0; i < f.size(); ++i) m[i] = f[i] > 0 ? 69.0 + 12.0 * std::log2 (f[i] / 440.0) : nan();
+        return m;
+    }
+    // x through a PitchCorrector, output moved back by its latency (lined up with x)
+    inline std::vector<float> correct (const std::vector<float>& x, double fs, const vs::PitchCorrector::Params& pp, double minHz = 60.0)
+    {
+        vs::PitchCorrector pc;
+        pc.prepare (fs, 512, minHz);
+        pc.setParams (pp);
+        pc.setEnabled (true);
+        const int L = pc.getLatency();
+        std::vector<float> y (x.size() + (size_t) L + 512, 0.0f);
+        std::copy (x.begin(), x.end(), y.begin());
+        for (size_t s = 0; s < y.size(); s += 512)
+        {
+            pc.process (&y[s], (int) std::min<size_t> (512, y.size() - s));
+            if (gLog && s % 2560 == 0)   // every ~53 ms: the analysis time is about half a frame behind the input
+                std::printf ("      t %.2f s: pitch %.2f, note %d, correction %+.1f c\n", s / fs, pc.curMidi.load(), pc.curNote.load(), pc.curCorrCents.load());
+        }
+        return std::vector<float> (y.begin() + L, y.begin() + L + (long) x.size());
+    }
+    // mean / standard deviation of v over [t0, t1) (NaNs skipped), in cents relative to 'ref'
+    inline std::pair<double, double> stats (const std::vector<double>& v, const std::vector<double>& tm, double t0, double t1, double ref)
+    {
+        double s = 0, s2 = 0; int n = 0;
+        for (size_t i = 0; i < v.size(); ++i)
+            if (tm[i] >= t0 && tm[i] < t1 && ! std::isnan (v[i])) { const double c = 100.0 * (v[i] - ref); s += c; s2 += c * c; ++n; }
+        if (n == 0) return { nan(), nan() };
+        const double m = s / n;
+        return { m, std::sqrt (std::max (0.0, s2 / n - m * m)) };
+    }
+    // moving average over +-half seconds (the "center" of the sung pitch, vibrato averaged out)
+    inline std::vector<double> center (const std::vector<double>& v, double half)
+    {
+        const int h = (int) std::lround (half / 0.005);
+        std::vector<double> c (v.size(), nan());
+        for (size_t i = 0; i < v.size(); ++i)
+        {
+            double s = 0; int n = 0;
+            for (int k = -h; k <= h; ++k)
+            {
+                const long j = (long) i + k;
+                if (j >= 0 && j < (long) v.size() && ! std::isnan (v[(size_t) j])) { s += v[(size_t) j]; ++n; }
+            }
+            if (n > h) c[i] = s / n;
+        }
+        return c;
+    }
+    // aperiodicity (YIN dip at the period, 0 = perfectly periodic) averaged over [t0, t1)
+    inline double aperiodicity (const std::vector<float>& x, double fs, double t0, double t1)
+    {
+        const int W = 1024, maxLag = (int) (fs / 70.0);
+        double acc = 0; int n = 0;
+        std::vector<double> d ((size_t) maxLag + 2);
+        for (size_t s = (size_t) (t0 * fs); s + (size_t) (W + maxLag) < (size_t) (t1 * fs) && s + (size_t) (W + maxLag) < x.size(); s += 480)
+        {
+            double run = 0; d[0] = 1;
+            for (int tau = 1; tau <= maxLag; ++tau)
+            {
+                double v = 0; for (int k = 0; k < W; ++k) { const double e = x[s + (size_t) k] - x[s + (size_t) (k + tau)]; v += e * e; }
+                run += v; d[(size_t) tau] = run > 0 ? v * tau / run : 1;
+            }
+            double best = 1.0;
+            for (int tau = (int) (fs / 1200); tau <= maxLag; ++tau)
+                if (d[(size_t) tau] < 0.3) { while (tau + 1 <= maxLag && d[(size_t) tau + 1] < d[(size_t) tau]) ++tau; best = d[(size_t) tau]; break; }
+            acc += best; ++n;
+        }
+        return n ? acc / n : nan();
+    }
+    // smoothed log spectrum (dB) averaged over [t0, t1): the vowel's formant envelope
+    inline std::vector<double> envelope (const std::vector<float>& x, double fs, double t0, double t1)
+    {
+        const int N = 2048;
+        vs::Fft fft; fft.prepare (N);
+        std::vector<float> fr ((size_t) N);
+        std::vector<vs::Fft::cpx> X ((size_t) N / 2 + 1);
+        std::vector<double> acc ((size_t) N / 2 + 1, 0.0);
+        int frames = 0;
+        for (size_t s = (size_t) (t0 * fs); s + N < (size_t) (t1 * fs) && s + N < x.size(); s += 1024, ++frames)
+        {
+            for (int i = 0; i < N; ++i) fr[(size_t) i] = x[s + (size_t) i] * (float) (0.5 - 0.5 * std::cos (2 * kPi * i / N));
+            fft.forwardReal (fr.data(), X.data());
+            for (size_t b = 0; b < X.size(); ++b) acc[b] += std::norm (X[b]);
+        }
+        // smooth across +-250 Hz so single harmonics don't matter, only the envelope
+        std::vector<double> env (acc.size(), 0.0);
+        const int w = (int) (250.0 * N / fs);
+        for (size_t b = 0; b < acc.size(); ++b)
+        {
+            double s = 0; int n = 0;
+            for (int k = -w; k <= w; ++k) { const long j = (long) b + k; if (j >= 0 && j < (long) acc.size()) { s += acc[(size_t) j]; ++n; } }
+            env[b] = 10.0 * std::log10 (s / std::max (1, n) / std::max (1, frames) + 1e-20);
+        }
+        return env;
+    }
+}
+
+void diagnoseNatural()
+{
+    using namespace natdiag;
+    const double fs = 48000.0;
+    auto vib = [] (double t, double t0, double cents) { const double d = std::clamp ((t - t0 - 0.3) / 0.4, 0.0, 1.0); return 0.01 * cents * d * std::sin (2 * kPi * 5.6 * (t - t0)); };
+    auto smooth = [] (double x) { x = std::clamp (x, 0.0, 1.0); return x * x * (3 - 2 * x); };
+    vs::PitchCorrector::Params full; full.strength = 1.0f; full.speed = 0.35f; full.toleranceCents = 0.0f;
+    vs::PitchCorrector::Params def; def.strength = 0.85f; def.speed = 0.45f; def.toleranceCents = 5.0f;
+    std::printf ("Pitch correction, measured on sung phrases with known pitch curves (Chromatic). Output pitch tracked\n"
+                 "every 5 ms with YIN; 'center' = pitch averaged over +-90 ms (one vibrato cycle). Cents re the nearest note.\n\n");
+
+    // A: a held note 30 cents flat, with vibrato (+-25 cents at 5.6 Hz, fading in after 0.3 s)
+    {
+        auto curve = [&] (double t) { return t < 0.2 || t > 3.2 ? nan() : 60.0 - 0.30 + vib (t, 0.2, 25.0); };
+        const auto x = voiceCurve (fs, 3.6, curve);
+        for (int setting = 0; setting < 3; ++setting)
+        {
+            auto pp = setting == 0 ? full : def;
+            if (setting == 2) { pp = full; pp.speed = 1.0f; }
+            const auto y = correct (x, fs, pp);
+            std::vector<double> tm, tmi;
+            const auto out = midiTrack (y, fs, tm), in = midiTrack (x, fs, tmi);
+            const auto so = stats (out, tm, 1.0, 3.0, 60.0), si = stats (in, tmi, 1.0, 3.0, 60.0);
+            const auto co = center (out, 0.09);
+            double settle = nan();
+            for (size_t i = 0; i < co.size(); ++i) if (tm[i] > 0.25 && ! std::isnan (co[i]) && std::abs (100.0 * (co[i] - 60.0)) < 5.0) { settle = tm[i] - 0.2; break; }
+            std::printf ("A  held note -30 c, vibrato, %-28s center %+6.1f c (in %+6.1f), vibrato depth %3.0f %% of the input, center within 5 c after %.2f s\n",
+                         setting == 0 ? "strength 100, speed 35:" : setting == 1 ? "default (85 / 45 / tol 5):" : "strength 100, speed 100:",
+                         so.first, si.first, 100.0 * so.second / si.second, settle);
+        }
+        // quality: aperiodicity and formant envelope of the corrected note vs the input
+        const auto y = correct (x, fs, full);
+        const double ai = aperiodicity (x, fs, 1.0, 3.0), ao = aperiodicity (y, fs, 1.0, 3.0);
+        const auto ei = envelope (x, fs, 1.0, 3.0), eo = envelope (y, fs, 1.0, 3.0);
+        // reference: the same voice synthesized 30 cents higher (a perfect shift with the formants kept)
+        const auto xr = voiceCurve (fs, 3.6, [&] (double t) { const double m = curve (t); return std::isnan (m) ? m : m + 0.30; });
+        const auto er = envelope (xr, fs, 1.0, 3.0);
+        const double ar = aperiodicity (xr, fs, 1.0, 3.0);
+        double dsum = 0, rsum = 0; int dn = 0;
+        for (size_t b = 0; b < ei.size(); ++b)
+        {
+            const double f = b * fs / 2048.0;
+            if (f > 300 && f < 4500) { dsum += std::abs (eo[b] - ei[b]); rsum += std::abs (er[b] - ei[b]); ++dn; }
+        }
+        std::printf ("   quality (shifted +30 c): aperiodicity in %.4f, out %.4f (a perfect shift %.4f); formant envelope 300 Hz-4.5 kHz"
+                     " moves %.2f dB on average (a perfect shift: %.2f dB)\n", ai, ao, ar, dsum / dn, rsum / dn);
+    }
+    // B: a slow drift within a note: -40 c rising to +10 c over 1.2 s, small vibrato
+    {
+        auto curve = [&] (double t) { return t < 0.2 || t > 2.6 ? nan() : 62.0 - 0.40 + 0.50 * smooth ((t - 0.4) / 1.2) + vib (t, 0.2, 10.0); };
+        const auto x = voiceCurve (fs, 3.0, curve);
+        const auto y = correct (x, fs, full);
+        std::vector<double> tm, tmi;
+        const auto out = center (midiTrack (y, fs, tm), 0.09), in = center (midiTrack (x, fs, tmi), 0.09);
+        std::printf ("B  slow drift -40 -> +10 c (strength 100, speed 35), center in -> out:");
+        double worst = 0;
+        for (double t : { 0.5, 0.8, 1.1, 1.4, 1.7, 2.0, 2.3 })
+        {
+            const size_t i = (size_t) std::lround ((t - tm[0]) / 0.005);
+            std::printf ("  %.1fs %+.0f->%+.0f", t, 100 * (in[i] - 62), 100 * (out[i] - 62));
+        }
+        for (size_t i = 0; i < out.size(); ++i) if (tm[i] > 0.5 && tm[i] < 2.4 && ! std::isnan (out[i])) worst = std::max (worst, std::abs (100 * (out[i] - 62)));
+        std::printf ("\n   largest center error after 0.3 s: %.1f c (a lagging center overshoots the other way while the voice drifts)\n", worst);
+    }
+    // C: legato steps between notes that are each off (-25, +20, -15 c), 80 ms glides
+    {
+        auto curve = [&] (double t)
+        {
+            if (t < 0.2 || t > 3.0) return nan();
+            double m;
+            if (t < 1.0) m = 60.0 - 0.25;
+            else if (t < 1.08) m = 60.0 - 0.25 + (4.0 + 0.45) * smooth ((t - 1.0) / 0.08);
+            else if (t < 1.9) m = 64.0 + 0.20;
+            else if (t < 1.98) m = 64.0 + 0.20 + (3.0 - 0.35) * smooth ((t - 1.9) / 0.08);
+            else m = 67.0 - 0.15;
+            const double t0 = t < 1.0 ? 0.2 : t < 1.9 ? 1.0 : 1.9;
+            return m + vib (t, t0, 20.0);
+        };
+        const auto x = voiceCurve (fs, 3.3, curve);
+        gLog = std::getenv ("VS_NATLOG") != nullptr;
+        const auto y = correct (x, fs, full);
+        gLog = false;
+        std::vector<double> tm;
+        const auto out = midiTrack (y, fs, tm);
+        const auto co = center (out, 0.09);
+        std::printf ("C  legato steps (-25, +20, -15 c), strength 100: note centers");
+        for (auto [a, b, ref] : { std::tuple<double, double, double> { 0.6, 0.95, 60.0 }, { 1.4, 1.85, 64.0 }, { 2.3, 2.9, 67.0 } })
+            std::printf ("  %+.1f c", stats (out, tm, a, b, ref).first);
+        // during each step: does the output overshoot the new note or bounce back?
+        double over = 0;
+        for (size_t i = 0; i < co.size(); ++i)
+        {
+            if (std::isnan (co[i])) continue;
+            if (tm[i] > 1.1 && tm[i] < 1.5) over = std::max (over, 100 * (co[i] - 64.0));
+            if (tm[i] > 2.0 && tm[i] < 2.4) over = std::max (over, 100 * (co[i] - 67.0));
+        }
+        std::printf ("; largest center overshoot right after a step: %+.1f c\n", over);
+    }
+    // D: a note sung right between two semitones (+45 c) with wide vibrato: does the target flip?
+    {
+        auto curve = [&] (double t) { return t < 0.2 || t > 2.8 ? nan() : 60.0 + 0.45 + vib (t, 0.2, 30.0); };
+        const auto x = voiceCurve (fs, 3.1, curve);
+        const auto y = correct (x, fs, full);
+        std::vector<double> tm;
+        const auto co = center (midiTrack (y, fs, tm), 0.09);
+        int flips = 0; int side = 0; double lo = 1e9, hi = -1e9;
+        for (size_t i = 0; i < co.size(); ++i)
+        {
+            if (tm[i] < 0.5 || tm[i] > 2.7 || std::isnan (co[i])) continue;
+            const int s = co[i] < 60.5 ? -1 : 1;
+            if (side != 0 && s != side) ++flips;
+            side = s; lo = std::min (lo, co[i]); hi = std::max (hi, co[i]);
+        }
+        std::printf ("D  between two notes (+45 c, vibrato +-30 c), strength 100: output center %.2f .. %.2f (MIDI), target changes %d\n", lo, hi, flips);
+    }
+    // E: a scoop into a note (from 150 c below over 120 ms), landing 20 c flat
+    {
+        auto curve = [&] (double t) { return t < 0.2 || t > 1.8 ? nan() : 64.0 - 1.5 + 1.3 * smooth ((t - 0.2) / 0.12) + vib (t, 0.2, 20.0); };
+        const auto x = voiceCurve (fs, 2.1, curve);
+        const auto y = correct (x, fs, full);
+        std::vector<double> tm, tmi;
+        const auto out = midiTrack (y, fs, tm), in = midiTrack (x, fs, tmi);
+        double scoopDiff = 0; int n = 0;
+        for (size_t i = 0; i < out.size() && i < in.size(); ++i)
+            if (tm[i] > 0.24 && tm[i] < 0.30 && ! std::isnan (out[i]) && ! std::isnan (in[i])) { scoopDiff += std::abs (100 * (out[i] - in[i])); ++n; }
+        const auto co = center (out, 0.09);
+        double over = 0; for (size_t i = 0; i < co.size(); ++i) if (tm[i] > 0.3 && tm[i] < 1.0 && ! std::isnan (co[i])) over = std::max (over, 100 * (co[i] - 64.0));
+        std::printf ("E  scoop from -150 c into a note 20 c flat: during the scoop out vs in %.1f c on average; center later %+.1f c at most; settled %+.1f c\n",
+                     n ? scoopDiff / n : nan(), over, stats (out, tm, 1.0, 1.7, 64.0).first);
+    }
+    // F: a fast run (110 ms notes, each 15 c sharp), then a held note
+    {
+        const int run[] = { 60, 62, 64, 65, 67, 65, 64, 62, 60, 62, 64, 65 };
+        auto curve = [&] (double t)
+        {
+            if (t < 0.2 || t > 2.6) return nan();
+            const int k = (int) ((t - 0.2) / 0.11);
+            if (k < 12) return run[k] + 0.15;
+            return 67.0 + 0.15 + vib (t, 0.2 + 12 * 0.11, 20.0);
+        };
+        const auto x = voiceCurve (fs, 2.9, curve);
+        const auto y = correct (x, fs, full);
+        std::vector<double> tm, tmi;
+        const auto out = midiTrack (y, fs, tm), in = midiTrack (x, fs, tmi);
+        int glitches = 0, frames = 0; double moved = 0;
+        for (size_t i = 0; i < out.size() && i < in.size(); ++i)
+            if (tm[i] > 0.25 && tm[i] < 0.2 + 12 * 0.11 && ! std::isnan (out[i]) && ! std::isnan (in[i]))
+            {
+                const double d = 100 * (out[i] - in[i]);
+                moved += d; ++frames;
+                if (std::abs (d) > 40) ++glitches;
+            }
+        std::printf ("F  fast run (110 ms notes, +15 c): output moved %+.1f c on average during the run, %d of %d frames off by more than 40 c; held note after: %+.1f c\n",
+                     frames ? moved / frames : nan(), glitches, frames, stats (out, tm, 2.0, 2.5, 67.0).first);
+    }
+}
+
+// --diag-labtone: THE_LAB's distortion tones (999.76 Hz and 6.3 kHz at -6 dBFS) through the whole plugin
+// at Natural Polish with Denoise 0 and Reverb off, Mix / Track, pitch correction on / off: the strongest
+// spectral peaks after 6.5 s, in dB re the strongest one (Blackman-Harris, FFT 65536)
+void diagnoseLabTone()
+{
+    const double fs = 48000.0;
+    const int N = 65536;
+    vs::Fft fft; fft.prepare (N);
+    std::vector<float> fr ((size_t) N), win ((size_t) N);
+    for (int i = 0; i < N; ++i)
+    {
+        const double a = 2 * kPi * i / (N - 1);
+        win[(size_t) i] = (float) (0.35875 - 0.48829 * std::cos (a) + 0.14128 * std::cos (2 * a) - 0.01168 * std::cos (3 * a));
+    }
+    std::vector<vs::Fft::cpx> X ((size_t) N / 2 + 1);
+    for (double f0 : { 999.76, 6300.0 })
+        for (int track = 0; track < 2; ++track)
+            for (int pitchOn = 0; pitchOn < 2; ++pitchOn)
+            {
+                Rig r (fs, track == 1, [&] (VocalStudioAudioProcessor& p)
+                {
+                    set (p, IDs::denoise, 0); set (p, IDs::revType, 0); set (p, IDs::doubler, 0); set (p, IDs::pitchOn, (float) pitchOn);
+                });
+                std::vector<float> x ((size_t) (8.5 * fs));
+                for (size_t i = 0; i < x.size(); ++i) x[i] = 0.5f * (float) std::sin (2 * kPi * f0 * (double) i / fs);
+                const auto y = r.run (x);
+                const size_t s0 = y.size() - (size_t) N;
+                for (int i = 0; i < N; ++i) fr[(size_t) i] = y[s0 + (size_t) i] * win[(size_t) i];
+                fft.forwardReal (fr.data(), X.data());
+                std::vector<double> mag (X.size());
+                for (size_t b = 0; b < X.size(); ++b) mag[b] = 20.0 * std::log10 (std::abs (X[b]) + 1e-20);
+                // local maxima, strongest first
+                std::vector<std::pair<double, size_t>> peaks;
+                for (size_t b = 3; b + 3 < mag.size(); ++b)
+                    if (mag[b] > mag[b - 1] && mag[b] >= mag[b + 1] && mag[b] > mag[b - 2] && mag[b] >= mag[b + 2]) peaks.push_back ({ mag[b], b });
+                std::sort (peaks.begin(), peaks.end(), [] (auto& a, auto& b) { return a.first > b.first; });
+                const double top = peaks.empty() ? 0.0 : peaks[0].first;
+                std::printf ("%7.2f Hz, %s, pitch %s:", f0, track ? "Track" : "Mix  ", pitchOn ? "on " : "off");
+                int shown = 0;
+                for (auto& [m, b] : peaks)
+                {
+                    // skip the main lobe's own shoulders (within 6 bins of a stronger peak already shown)
+                    if (shown >= 8 || m < top - 120.0) break;
+                    std::printf ("  %.1f Hz %+.1f dB", b * fs / N, m - top);
+                    ++shown;
+                }
+                std::printf ("\n");
+            }
+}
+
+// --diag-defaults: which Speed, Strength and Tolerance sound most natural? Speed: vibrato kept vs how
+// far the center lags (overshoot on drifts, after scoops and legato steps). Strength and Tolerance:
+// where notes that are 5 to 50 cents off end up.
+void diagnoseDefaults()
+{
+    using namespace natdiag;
+    const double fs = 48000.0;
+    auto vib = [] (double t, double t0, double cents) { const double d = std::clamp ((t - t0 - 0.3) / 0.4, 0.0, 1.0); return 0.01 * cents * d * std::sin (2 * kPi * 5.6 * (t - t0)); };
+    auto smooth = [] (double x) { x = std::clamp (x, 0.0, 1.0); return x * x * (3 - 2 * x); };
+    const auto held = voiceCurve (fs, 3.6, [&] (double t) { return t < 0.2 || t > 3.2 ? nan() : 60.0 - 0.30 + vib (t, 0.2, 25.0); });
+    const auto drift = voiceCurve (fs, 3.0, [&] (double t) { return t < 0.2 || t > 2.6 ? nan() : 62.0 - 0.40 + 0.50 * smooth ((t - 0.4) / 1.2) + vib (t, 0.2, 10.0); });
+    const auto scoop = voiceCurve (fs, 2.1, [&] (double t) { return t < 0.2 || t > 1.8 ? nan() : 64.0 - 1.5 + 1.3 * smooth ((t - 0.2) / 0.12) + vib (t, 0.2, 20.0); });
+    const auto legato = voiceCurve (fs, 3.3, [&] (double t)
+    {
+        if (t < 0.2 || t > 3.0) return nan();
+        double m;
+        if (t < 1.0) m = 60.0 - 0.25;
+        else if (t < 1.08) m = 60.0 - 0.25 + 4.45 * smooth ((t - 1.0) / 0.08);
+        else if (t < 1.9) m = 64.2;
+        else if (t < 1.98) m = 64.2 + 2.65 * smooth ((t - 1.9) / 0.08);
+        else m = 66.85;
+        return m + vib (t, t < 1.0 ? 0.2 : t < 1.9 ? 1.0 : 1.9, 20.0);
+    });
+    std::printf ("Speed (strength 100, tolerance 0):\n  speed  vibrato kept  center settled  drift overshoot  after a scoop  legato notes (err / overshoot)\n");
+    for (float sp : { 0.15f, 0.25f, 0.35f, 0.45f, 0.55f, 0.70f })
+    {
+        vs::PitchCorrector::Params pp; pp.strength = 1.0f; pp.speed = sp; pp.toleranceCents = 0.0f;
+        std::vector<double> tm, tmi;
+        const auto yo = midiTrack (correct (held, fs, pp), fs, tm);
+        const auto yi = midiTrack (held, fs, tmi);
+        const double vk = stats (yo, tm, 1.0, 3.0, 60.0).second / stats (yi, tmi, 1.0, 3.0, 60.0).second;
+        const auto co = center (yo, 0.09);
+        double settle = nan();
+        for (size_t i = 0; i < co.size(); ++i) if (tm[i] > 0.25 && ! std::isnan (co[i]) && std::abs (100.0 * (co[i] - 60.0)) < 5.0) { settle = tm[i] - 0.2; break; }
+        auto worstFrom = [&] (const std::vector<float>& x, double ref, double t0, double t1, bool signedUp)
+        {
+            std::vector<double> t2;
+            const auto c = center (midiTrack (correct (x, fs, pp), fs, t2), 0.09);
+            double w = 0;
+            for (size_t i = 0; i < c.size(); ++i)
+                if (t2[i] > t0 && t2[i] < t1 && ! std::isnan (c[i])) w = std::max (w, signedUp ? 100 * (c[i] - ref) : std::abs (100 * (c[i] - ref)));
+            return w;
+        };
+        const double dr = worstFrom (drift, 62.0, 0.5, 2.4, false), sc = worstFrom (scoop, 64.0, 0.3, 1.0, true);
+        std::vector<double> t3;
+        const auto lo = midiTrack (correct (legato, fs, pp), fs, t3);
+        const double e2 = stats (lo, t3, 1.4, 1.85, 64.0).first, e3 = stats (lo, t3, 2.3, 2.9, 67.0).first;
+        const auto lc = center (lo, 0.09);
+        double ov = 0;
+        for (size_t i = 0; i < lc.size(); ++i)
+        {
+            if (std::isnan (lc[i])) continue;
+            if (t3[i] > 1.1 && t3[i] < 1.5) ov = std::max (ov, 100 * (lc[i] - 64.0));
+            if (t3[i] > 2.0 && t3[i] < 2.4) ov = std::max (ov, 100 * (lc[i] - 67.0));
+        }
+        std::printf ("  %3.0f %%     %4.0f %%        %.2f s          %5.1f c          %+5.1f c       %+5.1f / %+5.1f c,  %+5.1f c\n",
+                     sp * 100.0f, 100.0 * vk, settle, dr, sc, e2, e3, ov);
+    }
+    std::printf ("\nWhere held notes end up (speed 35, cents re the note; in: how far off it was sung):\n  strength  tol     in: -5      -15      -30      -50\n");
+    std::vector<std::vector<float>> notes;
+    for (double off : { 0.05, 0.15, 0.30, 0.50 })
+        notes.push_back (voiceCurve (fs, 2.4, [&, off] (double t) { return t < 0.2 || t > 2.2 ? nan() : 60.0 - off + vib (t, 0.2, 20.0); }));
+    for (float st : { 0.7f, 0.8f, 0.85f, 0.9f, 1.0f })
+        for (float tol : { 5.0f, 8.0f, 10.0f })
+        {
+            vs::PitchCorrector::Params pp; pp.strength = st; pp.speed = 0.35f; pp.toleranceCents = tol;
+            std::printf ("  %4.0f %%  %4.0f c ", st * 100.0f, tol);
+            for (auto& x : notes)
+            {
+                std::vector<double> tm;
+                std::printf ("  %+6.1f c", stats (midiTrack (correct (x, fs, pp), fs, tm), tm, 0.9, 2.1, 60.0).first);
+            }
+            std::printf ("\n");
+        }
+}
+
+// Natural pitch correction: sung phrases with known pitch curves through the corrector
+void testNaturalCorrection()
+{
+    using namespace natdiag;
+    std::printf ("\n-- natural pitch correction (sung phrases with known pitch curves) --\n");
+    const double fs = 48000.0;
+    auto vib = [] (double t, double t0, double cents) { const double d = std::clamp ((t - t0 - 0.3) / 0.4, 0.0, 1.0); return 0.01 * cents * d * std::sin (2 * kPi * 5.6 * (t - t0)); };
+    auto smooth = [] (double x) { x = std::clamp (x, 0.0, 1.0); return x * x * (3 - 2 * x); };
+    const vs::PitchCorrector::Params def;                        // the plugin's defaults
+    vs::PitchCorrector::Params full = def; full.strength = 1.0f; full.toleranceCents = 0.0f;
+    juce::String rows;
+
+    // legato: C 25 c flat, an 80 ms glide to E 20 c sharp, then to G 15 c flat
+    {
+        const auto x = voiceCurve (fs, 3.3, [&] (double t)
+        {
+            if (t < 0.2 || t > 3.0) return nan();
+            double m;
+            if (t < 1.0) m = 60.0 - 0.25;
+            else if (t < 1.08) m = 60.0 - 0.25 + 4.45 * smooth ((t - 1.0) / 0.08);
+            else if (t < 1.9) m = 64.2;
+            else if (t < 1.98) m = 64.2 + 2.65 * smooth ((t - 1.9) / 0.08);
+            else m = 66.85;
+            return m + vib (t, t < 1.0 ? 0.2 : t < 1.9 ? 1.0 : 1.9, 20.0);
+        });
+        std::vector<double> tm;
+        const auto out = midiTrack (correct (x, fs, full), fs, tm);
+        const double e2 = stats (out, tm, 1.4, 1.85, 64.0).first, e3 = stats (out, tm, 2.3, 2.9, 67.0).first;
+        const auto c = center (out, 0.09);
+        double ov = 0;
+        for (size_t i = 0; i < c.size(); ++i)
+        {
+            if (std::isnan (c[i])) continue;
+            if (tm[i] > 1.1 && tm[i] < 1.5) ov = std::max (ov, 100 * (c[i] - 64.0));
+            if (tm[i] > 2.0 && tm[i] < 2.4) ov = std::max (ov, 100 * (c[i] - 67.0));
+        }
+        note ("legato steps, strength 100: notes after the steps " + juce::String (e2, 1) + " and " + juce::String (e3, 1)
+              + " c (1.3.0: +19.0 and -4.1), largest overshoot " + juce::String (ov, 1) + " c (1.3.0: 23.6)");
+        check (std::abs (e2) < 5.0 && std::abs (e3) < 5.0, "legato: a note reached by a smooth glide is corrected (within 5 cents)");
+        check (ov < 10.0, "legato: no overshoot of 10 cents or more after a step");
+        rows << "| Legato steps (C -25 c, glide to E +20 c, to G -15 c), strength 100 | notes after the steps " << juce::String (e2, 1) << " / "
+             << juce::String (e3, 1) << " c, overshoot " << juce::String (ov, 1) << " c | +19.0 / -4.1 c, overshoot 23.6 c |\n";
+    }
+    // vibrato: kept at the default Speed, reduced (not widened) at Speed 100
+    {
+        const auto x = voiceCurve (fs, 3.6, [&] (double t) { return t < 0.2 || t > 3.2 ? nan() : 60.0 - 0.30 + vib (t, 0.2, 25.0); });
+        std::vector<double> tmi;
+        const double vin = stats (midiTrack (x, fs, tmi), tmi, 1.0, 3.0, 60.0).second;
+        vs::PitchCorrector::Params fast = full; fast.speed = 1.0f;
+        std::vector<double> t1, t2;
+        const auto o1 = midiTrack (correct (x, fs, def), fs, t1), o2 = midiTrack (correct (x, fs, fast), fs, t2);
+        const double k1 = stats (o1, t1, 1.0, 3.0, 60.0).second / vin, k2 = stats (o2, t2, 1.0, 3.0, 60.0).second / vin;
+        const double c1 = stats (o1, t1, 1.0, 3.0, 60.0).first;
+        note ("held note 30 c flat with vibrato: defaults leave it " + juce::String (c1, 1) + " c, vibrato " + juce::String (juce::roundToInt (100 * k1))
+              + " %; Speed 100: vibrato " + juce::String (juce::roundToInt (100 * k2)) + " % (1.3.0: 112 %)");
+        check (k1 > 0.95 && k1 < 1.05, "the default Speed keeps vibrato as sung");
+        check (k2 < 0.8, "Speed 100 flattens vibrato (it used to widen it)");
+        check (c1 > -10.0 && c1 < -3.0, "the defaults bring a note 30 cents flat to within 10 cents, and leave a little");
+        rows << "| Held note 30 c flat, vibrato +-25 c | defaults: " << juce::String (c1, 1) << " c, vibrato " << juce::String (juce::roundToInt (100 * k1))
+             << " %; Speed 100: vibrato " << juce::String (juce::roundToInt (100 * k2)) << " % | defaults (70/35/8): -14.7 c; Speed 100: vibrato 112 % |\n";
+    }
+    // a scoop into a note: kept as sung, and no overshoot after it; a slow drift: little overshoot
+    {
+        const auto x = voiceCurve (fs, 2.1, [&] (double t) { return t < 0.2 || t > 1.8 ? nan() : 64.0 - 1.5 + 1.3 * smooth ((t - 0.2) / 0.12) + vib (t, 0.2, 20.0); });
+        std::vector<double> tm, tmi;
+        const auto out = midiTrack (correct (x, fs, full), fs, tm), in = midiTrack (x, fs, tmi);
+        double d = 0; int n = 0;
+        for (size_t i = 0; i < out.size() && i < in.size(); ++i)
+            if (tm[i] > 0.24 && tm[i] < 0.30 && ! std::isnan (out[i]) && ! std::isnan (in[i])) { d += std::abs (100 * (out[i] - in[i])); ++n; }
+        const auto c = center (out, 0.09);
+        double ov = 0; for (size_t i = 0; i < c.size(); ++i) if (tm[i] > 0.3 && tm[i] < 1.0 && ! std::isnan (c[i])) ov = std::max (ov, 100 * (c[i] - 64.0));
+        const auto y = voiceCurve (fs, 3.0, [&] (double t) { return t < 0.2 || t > 2.6 ? nan() : 62.0 - 0.40 + 0.50 * smooth ((t - 0.4) / 1.2) + vib (t, 0.2, 10.0); });
+        std::vector<double> t3;
+        const auto dc = center (midiTrack (correct (y, fs, full), fs, t3), 0.09);
+        double dr = 0; for (size_t i = 0; i < dc.size(); ++i) if (t3[i] > 0.5 && t3[i] < 2.4 && ! std::isnan (dc[i])) dr = std::max (dr, std::abs (100 * (dc[i] - 62.0)));
+        note ("scoop: kept within " + juce::String (n ? d / n : 99.0, 1) + " c of the input, overshoot after " + juce::String (ov, 1)
+              + " c (1.3.0: 13.9); slow drift: center off by " + juce::String (dr, 1) + " c at most (1.3.0: 14.8)");
+        check (n > 0 && d / n < 8.0, "a scoop into a note stays as sung");
+        check (ov < 6.0, "no overshoot after a scoop");
+        check (dr < 12.0, "a slow drift within a note is followed without a large overshoot");
+        rows << "| Scoop from -150 c into a note 20 c flat, strength 100 | overshoot after it " << juce::String (ov, 1) << " c | 13.9 c |\n"
+             << "| Slow drift -40 to +10 c in 1.2 s, strength 100 | center off by " << juce::String (dr, 1) << " c at most | 14.8 c |\n";
+    }
+    report << "## Natural pitch correction\n\nSung phrases with known pitch curves, through the pitch corrector alone (Chromatic). "
+              "Output pitch tracked every 5 ms; 'center' = averaged over one vibrato cycle. `VocalTest --diag-natural` and "
+              "`--diag-defaults` have the full measurements.\n\n| Phrase | 1.3.1 | 1.3.0 |\n|---|---|---|\n" << rows << "\n";
+}
+
 void diagnosePsola()
 {
     const double fs = 48000.0;
@@ -1760,6 +2241,491 @@ void screenshot (const juce::String& file)
     std::printf ("screenshot written to %s\n", f.getFullPathName().toRawUTF8());
 }
 
+//==============================================================================
+// --diag-key: key detection on sung melodies and on chord progressions, in all 12 keys, with the
+// current key profiles and the alternatives from the literature
+namespace keydiag
+{
+    constexpr int kFeat = 5;
+}
+namespace keydiag
+{
+    struct Tune { const char* name; int tonic; bool minor; std::vector<std::pair<int, double>> notes; };   // (MIDI, beats)
+
+    inline std::vector<Tune> melodies()
+    {
+        return {
+            { "Twinkle Twinkle (C)", 0, false, { {60,1},{60,1},{67,1},{67,1},{69,1},{69,1},{67,2},{65,1},{65,1},{64,1},{64,1},{62,1},{62,1},{60,2},
+                                                 {67,1},{67,1},{65,1},{65,1},{64,1},{64,1},{62,2},{67,1},{67,1},{65,1},{65,1},{64,1},{64,1},{62,2},
+                                                 {60,1},{60,1},{67,1},{67,1},{69,1},{69,1},{67,2},{65,1},{65,1},{64,1},{64,1},{62,1},{62,1},{60,2} } },
+            { "Ode to Joy (C)", 0, false, { {64,1},{64,1},{65,1},{67,1},{67,1},{65,1},{64,1},{62,1},{60,1},{60,1},{62,1},{64,1},{64,1.5},{62,.5},{62,2},
+                                            {64,1},{64,1},{65,1},{67,1},{67,1},{65,1},{64,1},{62,1},{60,1},{60,1},{62,1},{64,1},{62,1.5},{60,.5},{60,2} } },
+            { "Mary Had a Little Lamb (C)", 0, false, { {64,1},{62,1},{60,1},{62,1},{64,1},{64,1},{64,2},{62,1},{62,1},{62,2},{64,1},{67,1},{67,2},
+                                                         {64,1},{62,1},{60,1},{62,1},{64,1},{64,1},{64,1},{64,1},{62,1},{62,1},{64,1},{62,1},{60,4} } },
+            { "Frere Jacques (C)", 0, false, { {60,1},{62,1},{64,1},{60,1},{60,1},{62,1},{64,1},{60,1},{64,1},{65,1},{67,2},{64,1},{65,1},{67,2},
+                                               {67,.5},{69,.5},{67,.5},{65,.5},{64,1},{60,1},{67,.5},{69,.5},{67,.5},{65,.5},{64,1},{60,1},
+                                               {60,1},{55,1},{60,2},{60,1},{55,1},{60,2} } },
+            // a pop-style verse that leans on D, F and A (the ii and IV chords) and resolves to C
+            { "Pop verse on D-F-A (C)", 0, false, { {62,1},{65,1},{69,1},{67,1},{65,1},{64,1},{62,2},{62,1},{65,1},{69,1},{67,1},{65,1},{64,1},{62,2},
+                                                    {65,1},{69,1},{72,1},{71,1},{69,1},{67,1},{65,2},{64,1},{65,1},{64,1},{62,1},{60,4} } },
+            { "Greensleeves (Am)", 9, true, { {57,1},{60,2},{62,1},{64,1.5},{65,.5},{64,1},{62,2},{59,1},{55,1.5},{57,.5},{59,1},{60,2},{57,1},
+                                              {57,1.5},{56,.5},{57,1},{59,2},{56,1},{52,2},{57,1},{60,2},{62,1},{64,1.5},{65,.5},{64,1},{62,2},{59,1},
+                                              {55,1.5},{57,.5},{59,1},{60,1.5},{59,.5},{57,1},{56,1.5},{54,.5},{56,1},{57,3} } },
+            { "God Rest Ye (Am)", 9, true, { {57,1},{57,1},{64,1},{64,1},{62,1},{60,1},{59,1},{57,1},{55,1},{57,1},{59,1},{60,1},{62,1},{64,2},
+                                             {57,1},{57,1},{64,1},{64,1},{62,1},{60,1},{59,1},{57,1},{55,1},{57,1},{59,1},{60,1},{62,1},{64,2},
+                                             {64,1},{65,1},{62,1},{64,1},{65,1},{67,1},{69,1},{64,1},{62,1},{60,1},{57,1},{59,1},{60,1},{62,1},{64,1},{62,1},{60,1},{59,1},{57,2} } },
+            { "Minor pop (Am)", 9, true, { {64,1},{64,1},{62,1},{60,1},{62,1},{64,2},{57,2},{64,1},{64,1},{62,1},{60,1},{59,1},{57,3},
+                                           {60,1},{62,1},{64,1},{65,1},{64,1},{62,1},{60,2},{59,1},{57,4} } },
+            { "Minor ballad (Am)", 9, true, { {57,1},{60,1},{64,2},{62,1},{60,1},{59,2},{57,1},{59,1},{60,1},{62,1},{64,3},
+                                              {65,1},{64,1},{62,1},{60,1},{59,1},{56,1},{57,4} } },
+        };
+    }
+
+    // chord progressions: per chord (root offset from the tonic, minor triad?, raised 7th as a dominant?)
+    struct Prog { const char* name; bool minor; std::vector<std::pair<int, int>> chords; };   // (root, quality 0 maj 1 min)
+    inline std::vector<Prog> progressions()
+    {
+        return {
+            { "I-V-vi-IV", false, { {0,0},{7,0},{9,1},{5,0} } },
+            { "vi-IV-I-V", false, { {9,1},{5,0},{0,0},{7,0} } },
+            { "I-IV-V-I", false, { {0,0},{5,0},{7,0},{0,0} } },
+            { "ii-V-I", false, { {2,1},{7,0},{0,0},{0,0} } },
+            { "i-iv-V-i", true, { {0,1},{5,1},{7,0},{0,1} } },
+            { "i-VI-III-VII", true, { {0,1},{8,0},{3,0},{10,0} } },
+            { "i-VII-VI-V", true, { {0,1},{10,0},{8,0},{7,0} } },
+        };
+    }
+
+    struct Profile { const char* name; double maj[12], mnr[12]; };
+    inline const std::vector<Profile>& profiles()
+    {
+        static const std::vector<Profile> p {
+            { "Krumhansl-Kessler 1982", { 6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88 },
+                                        { 6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17 } },
+            { "Temperley 1999",         { 5.0, 2.0, 3.5, 2.0, 4.5, 4.0, 2.0, 4.5, 2.0, 3.5, 1.5, 4.0 },
+                                        { 5.0, 2.0, 3.5, 4.5, 2.0, 4.0, 2.0, 4.5, 3.5, 2.0, 1.5, 4.0 } },
+            { "Temperley 2007 (Kostka-Payne)", { 0.748, 0.060, 0.488, 0.082, 0.670, 0.460, 0.096, 0.715, 0.104, 0.366, 0.057, 0.400 },
+                                               { 0.712, 0.084, 0.474, 0.618, 0.049, 0.460, 0.105, 0.747, 0.404, 0.067, 0.133, 0.330 } },
+            { "Albrecht-Shanahan 2013", { 0.238, 0.006, 0.111, 0.006, 0.137, 0.094, 0.016, 0.214, 0.009, 0.080, 0.008, 0.081 },
+                                        { 0.220, 0.006, 0.104, 0.123, 0.019, 0.103, 0.012, 0.214, 0.062, 0.022, 0.061, 0.052 } },
+            { "T2007 + A-S average",    { 0.207, 0.010, 0.113, 0.012, 0.147, 0.101, 0.019, 0.191, 0.017, 0.083, 0.011, 0.088 },
+                                        { 0.195, 0.013, 0.111, 0.134, 0.015, 0.104, 0.017, 0.193, 0.075, 0.019, 0.046, 0.065 } },
+        };
+        return p;
+    }
+
+    inline double pearson (const std::array<double, 12>& h, const double* p, int key)
+    {
+        double mh = 0, mp = 0;
+        for (int i = 0; i < 12; ++i) { mh += h[(size_t) i]; mp += p[(i - key + 12) % 12]; }
+        mh /= 12; mp /= 12;
+        double sxy = 0, sxx = 0, syy = 0;
+        for (int i = 0; i < 12; ++i)
+        {
+            const double a = h[(size_t) i] - mh, b = p[(i - key + 12) % 12] - mp;
+            sxy += a * b; sxx += a * a; syy += b * b;
+        }
+        return sxx <= 0 || syy <= 0 ? 0.0 : sxy / std::sqrt (sxx * syy);
+    }
+    inline std::pair<int, bool> bestKey (const std::array<double, 12>& h, const Profile& p)
+    {
+        double b = -2; std::pair<int, bool> r { 0, false };
+        for (int m = 0; m < 2; ++m)
+            for (int k = 0; k < 12; ++k)
+            {
+                const double v = pearson (h, m ? p.mnr : p.maj, k);
+                if (v > b) { b = v; r = { k, m == 1 }; }
+            }
+        return r;
+    }
+    // how a detected key relates to the true one
+    inline const char* relation (int tk, bool tm, int dk, bool dm)
+    {
+        if (tk == dk && tm == dm) return "correct";
+        const int rel = tm ? (tk + 3) % 12 : (tk + 9) % 12;      // relative major / minor
+        if (dk == rel && dm != tm) return "relative";
+        if (dk == tk && dm != tm) return "parallel";
+        if (dm == tm && (dk == (tk + 7) % 12 || dk == (tk + 5) % 12)) return "fifth";
+        return "other";
+    }
+
+    // the detector up to 1.3.0: a duration-weighted tally of the sung notes from the pitch tracker
+    inline double gMonoShare = 0.0;       // of the last features(): share of frames that were one voice
+    inline double gVoicedFrac = 0.0;      // of the last melodyHistogram: time with one clear pitch / time with sound
+    inline std::array<double, 12> melodyHistogram (const std::vector<float>& x, double fs)
+    {
+        vs::PitchCorrector pc;
+        pc.prepare (fs, 512, 60.0);
+        pc.setEnabled (false);
+        std::array<double, 12> h {};
+        std::vector<float> buf (120);
+        double voicedT = 0.0, soundT = 0.0;
+        for (size_t pos = 0; pos < x.size(); pos += 120)
+        {
+            const int n = (int) std::min<size_t> (120, x.size() - pos);
+            std::copy (x.begin() + (long) pos, x.begin() + (long) pos + n, buf.begin());
+            pc.process (buf.data(), n);
+            if (pc.curNote.load() >= 0) h[(size_t) (((int) std::lround (pc.curMidi.load()) % 12 + 12) % 12)] += n / fs;
+            double e = 0; for (int i = 0; i < n; ++i) e += (double) x[pos + (size_t) i] * x[pos + (size_t) i];
+            if (std::sqrt (e / n) > 0.003) { soundT += n / fs; if (pc.curNote.load() >= 0) voicedT += n / fs; }
+        }
+        gVoicedFrac = soundT > 0 ? voicedT / soundT : 0.0;
+        return h;
+    }
+}
+void diagnoseKey()
+{
+    using namespace keydiag;
+    const double fs = 48000.0;
+    const auto& profs = profiles();
+    const char* featNames[] = { "pitch track", "chroma", "HPCP 4 harm.", "solo notes", "auto (plugin)" };
+
+    auto features = [&] (const std::vector<float>& x)
+    {
+        std::array<std::array<double, 12>, kFeat> f {};
+        f[0] = melodyHistogram (x, fs);
+        for (int v = 0; v < 2; ++v)
+        {
+            vs::ChromaAnalyzer ca;
+            ca.harmonics = v == 0 ? 1 : 4;
+            ca.prepare (fs);
+            for (size_t pos = 0; pos < x.size(); pos += 512) ca.push (x.data() + pos, (int) std::min<size_t> (512, x.size() - pos));
+            if (v == 0) { f[1] = ca.chroma; continue; }
+            f[2] = ca.chroma; f[3] = ca.notes; f[4] = ca.keyHistogram();
+            gMonoShare = ca.monoShare();
+        }
+        return f;
+    };
+    std::printf ("Key detection: each test in all 12 keys. Melodies sung by the test voice (vibrato, +-15 cent random detune\n"
+                 "per note); chords = triads + bass; songs = a melody over chords and bass in its key.\n"
+                 "Cells: correct / tests (relative major-minor mix-ups in brackets).\n\n");
+    auto run = [&] (const char* title, int count, auto&& makeSignal, auto&& truth, auto&& label)
+    {
+        int good[kFeat][8] = {}, rel[kFeat][8] = {}, total = 0;
+        std::vector<std::string> misses;
+        std::vector<double> marginsGood, marginsBad;
+        std::vector<double> vfs; int switchGood[4] = {};
+        for (int item = 0; item < count; ++item)
+            for (int k = 0; k < 12; ++k)
+            {
+                const auto x = makeSignal (item, k);
+                const auto f = features (x);
+                const auto [tk, tm] = truth (item, k);
+                ++total;
+                const double vf = gMonoShare;
+                vfs.push_back (vf);
+                for (int ti = 0; ti < 4; ++ti)
+                {
+                    const auto [sk, sm] = bestKey (vf > 0.4 + 0.1 * ti ? f[3] : f[2], profs[3]);
+                    if (sk == tk && sm == tm) ++switchGood[ti];
+                }
+                for (int fi = 0; fi < kFeat; ++fi)
+                    for (size_t p = 0; p < profs.size(); ++p)
+                    {
+                        const auto [dk, dm] = bestKey (f[(size_t) fi], profs[p]);
+                        const std::string r = relation (tk, tm, dk, dm);
+                        if (r == "correct") ++good[fi][p];
+                        if (r == "relative") ++rel[fi][p];
+                        if (fi == 4 && p == 3 && r != "correct")
+                            misses.push_back (std::string (label (item)) + " in " + vs::Scales::noteName (tk) + (tm ? "m" : "") + " -> "
+                                              + vs::Scales::noteName (dk) + (dm ? "m" : "") + " (" + r + ")");
+                        if (fi == 4 && p == 3)
+                        {
+                            int kk; bool mm; double margin;
+                            vs::KeyProfiles::best (f[(size_t) fi], kk, mm, margin, profs[p].maj, profs[p].mnr);
+                            (r == "correct" ? marginsGood : marginsBad).push_back (margin);
+                        }
+                    }
+            }
+        auto pct = [] (std::vector<double> v, double q) { if (v.empty()) return 0.0; std::sort (v.begin(), v.end()); return v[(size_t) (q * (double) (v.size() - 1))]; };
+        std::printf ("== %s (%d tests)\n  %-14s", title, total, "");
+        for (auto& p : profs) std::printf ("  %-30s", p.name);
+        std::printf ("\n");
+        for (int fi = 0; fi < kFeat; ++fi)
+        {
+            std::printf ("  %-14s", featNames[fi]);
+            for (size_t p = 0; p < profs.size(); ++p) std::printf ("  %3d (rel %3d)%-17s", good[fi][p], rel[fi][p], "");
+            std::printf ("\n");
+        }
+        std::printf ("  auto + Albrecht-Shanahan: margin over the runner-up when right: min %.3f, 10%% %.3f, median %.3f;"
+                     " when wrong: median %.3f, max %.3f\n", pct (marginsGood, 0.0), pct (marginsGood, 0.1), pct (marginsGood, 0.5),
+                     pct (marginsBad, 0.5), pct (marginsBad, 1.0));
+        std::printf ("  solo-voice share: min %.2f, median %.2f, max %.2f; solo notes if above 0.4 / 0.5 / 0.6 / 0.7, else HPCP 4 (A-S): %d / %d / %d / %d\n",
+                     pct (vfs, 0.0), pct (vfs, 0.5), pct (vfs, 1.0), switchGood[0], switchGood[1], switchGood[2], switchGood[3]);
+        std::printf ("  misses with auto + Albrecht-Shanahan (%d):", (int) misses.size());
+        for (size_t i = 0; i < misses.size() && i < 12; ++i) std::printf ("%s %s", i ? ";" : "", misses[i].c_str());
+        std::printf ("\n\n");
+    };
+
+    const auto tunes = melodies();
+    const auto progs = progressions();
+    auto melodyNotes = [&] (int item, int k, double level, Rng& rng, double tune = 0.0)
+    {
+        const auto& t = tunes[(size_t) item];
+        std::vector<Note> notes; double time = 0.3;
+        for (auto [m, beats] : t.notes)
+        {
+            int mm = m + k; if (mm > 74) mm -= 12;
+            notes.push_back ({ time, beats * 0.42 - 0.04, mm + tune + 0.15 * rng.bip() });
+            time += beats * 0.42;
+        }
+        juce::ignoreUnused (level);
+        return std::make_pair (notes, time);
+    };
+    auto chordNotes = [&] (const Prog& pr, int k, double totalSec, double chordSec, double tune = 0.0)
+    {
+        std::vector<Note> notes;
+        int ci = 0;
+        for (double time = 0.2; time < totalSec - 0.5; time += chordSec, ++ci)
+        {
+            const auto [root, minorChord] = pr.chords[(size_t) (ci % (int) pr.chords.size())];
+            const int r = 48 + ((root + k) % 12);
+            for (int iv : { 0, minorChord ? 3 : 4, 7 }) notes.push_back ({ time, chordSec - 0.1, (double) (r + 12 + iv) + tune });
+            notes.push_back ({ time, chordSec - 0.1, (double) (r - 12 + (r - 12 < 36 ? 12 : 0)) + tune });
+        }
+        return notes;
+    };
+
+    {
+        Rng rng (11);
+        run ("Melodies (solo voice)", (int) tunes.size(),
+             [&] (int item, int k) { auto [n, t] = melodyNotes (item, k, 0.25, rng); return voice (fs, n, t + 0.5, 20.0, 0.25); },
+             [&] (int item, int k) { return std::pair<int, bool> { (tunes[(size_t) item].tonic + k) % 12, tunes[(size_t) item].minor }; },
+             [&] (int item) { return tunes[(size_t) item].name; });
+    }
+    run ("Chord progressions", (int) progs.size(),
+         [&] (int item, int k) { const auto n = chordNotes (progs[(size_t) item], k, 16.4, 2.0); return voice (fs, n, 16.5, 0.0, 0.12); },
+         [&] (int item, int k) { return std::pair<int, bool> { k % 12, progs[(size_t) item].minor }; },
+         [&] (int item) { return progs[(size_t) item].name; });
+    {
+        Rng rng (23);
+        run ("Songs (melody over chords and bass)", (int) tunes.size(),
+             [&] (int item, int k)
+             {
+                 auto [n, t] = melodyNotes (item, k, 0.25, rng);
+                 auto x = voice (fs, n, t + 0.5, 20.0, 0.25);
+                 // a progression in the same mode, two chords per bar of four beats
+                 std::vector<const Prog*> same;
+                 for (auto& p : progs) if (p.minor == tunes[(size_t) item].minor) same.push_back (&p);
+                 const int tonic = (tunes[(size_t) item].tonic + k) % 12;
+                 const auto cn = chordNotes (*same[(size_t) item % same.size()], tonic, t + 0.5, 4 * 0.42);
+                 const auto bed = voice (fs, cn, t + 0.5, 0.0, 0.10);
+                 for (size_t i = 0; i < x.size() && i < bed.size(); ++i) x[i] += bed[i];
+                 return x;
+             },
+             [&] (int item, int k) { return std::pair<int, bool> { (tunes[(size_t) item].tonic + k) % 12, tunes[(size_t) item].minor }; },
+             [&] (int item) { return tunes[(size_t) item].name; });
+    }
+    {
+        Rng rng (23);
+        const double tune = -0.32;      // A = 432 Hz
+        run ("Songs tuned to A = 432 Hz", (int) tunes.size(),
+             [&] (int item, int k)
+             {
+                 auto [n, t] = melodyNotes (item, k, 0.25, rng, tune);
+                 auto x = voice (fs, n, t + 0.5, 20.0, 0.25);
+                 std::vector<const Prog*> same;
+                 for (auto& p : progs) if (p.minor == tunes[(size_t) item].minor) same.push_back (&p);
+                 const int tonic = (tunes[(size_t) item].tonic + k) % 12;
+                 const auto cn = chordNotes (*same[(size_t) item % same.size()], tonic, t + 0.5, 4 * 0.42, tune);
+                 const auto bed = voice (fs, cn, t + 0.5, 0.0, 0.10);
+                 for (size_t i = 0; i < x.size() && i < bed.size(); ++i) x[i] += bed[i];
+                 return x;
+             },
+             [&] (int item, int k) { return std::pair<int, bool> { (tunes[(size_t) item].tonic + k) % 12, tunes[(size_t) item].minor }; },
+             [&] (int item) { return tunes[(size_t) item].name; });
+    }
+}
+
+
+
+// --diag-keyfile F...: the key of real recordings, as the new detector and as 1.3.0's read it
+void diagnoseKeyFile (const juce::StringArray& files)
+{
+    using namespace keydiag;
+    auto name = [] (int k, bool m) { return juce::String (vs::Scales::noteName (k)) + (m ? " minor" : " major"); };
+    for (auto& path : files)
+    {
+        VocalStudioAudioProcessor p;
+        const auto err = p.loadFileTake (juce::File (path));
+        const auto* t = p.player.getTake();
+        if (err.isNotEmpty() || t == nullptr) { std::printf ("%s: %s\n", path.toRawUTF8(), err.toRawUTF8()); continue; }
+        const double fs = t->rate;
+        std::vector<float> x ((size_t) t->audio.getNumSamples());
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            float s = 0; for (int c = 0; c < t->audio.getNumChannels(); ++c) s += t->audio.getSample (c, (int) i);
+            x[i] = s / (float) t->audio.getNumChannels();
+        }
+        std::printf ("%s (%.1f s, %.0f Hz)\n", t->name.toRawUTF8(), x.size() / fs, fs);
+        // the new detector over the whole file, as ANALYZE would hear it
+        vs::ChromaAnalyzer ca; ca.prepare (fs);
+        for (size_t pos = 0; pos < x.size(); pos += 512) ca.push (x.data() + pos, (int) std::min<size_t> (512, x.size() - pos));
+        int k; bool m; float conf; ca.detect (k, m, conf);
+        int kc, kn; bool mc, mn; double mgc, mgn;
+        vs::KeyProfiles::best (ca.chroma, kc, mc, mgc);
+        vs::KeyProfiles::best (ca.notes, kn, mn, mgn);
+        std::printf ("  1.3.1: %s (%.0f %% sure; %s). Heard as a solo voice %.0f %% of the time; tuning %+.0f cents from A = 440 Hz\n",
+                     name (k, m).toRawUTF8(), 100.0 * conf, conf >= 0.15f ? "ANALYZE would set it" : "ANALYZE would call it unclear",
+                     100.0 * ca.monoShare(), ca.tuningCents());
+        std::printf ("         from the whole spectrum: %s (lead %.3f); from the sung notes: %s (lead %.3f)\n",
+                     name (kc, mc).toRawUTF8(), mgc, name (kn, mn).toRawUTF8(), mgn);
+        for (int which = 0; which < 2; ++which)
+        {
+            const auto& hh = which ? ca.notes : ca.chroma;
+            double tot = 0; for (double v : hh) tot += v;
+            std::printf ("         %s:", which ? "sung notes   " : "spectrum     ");
+            for (int i = 0; i < 12; ++i) std::printf (" %s %4.1f%%", vs::Scales::noteName (i), 100.0 * hh[(size_t) i] / std::max (1e-9, tot));
+            std::printf ("\n");
+        }
+        // every profile set on both tallies
+        for (const auto& pf : profiles())
+        {
+            const auto a = bestKey (ca.chroma, pf), b = bestKey (ca.notes, pf);
+            std::printf ("         %-32s spectrum %-9s notes %s\n", pf.name, name (a.first, a.second).toRawUTF8(), name (b.first, b.second).toRawUTF8());
+        }
+        // 1.3.0: the pitch tracker's note tally with the 1982 profiles
+        const auto h = melodyHistogram (x, fs);
+        const auto old = bestKey (h, profiles()[0]);
+        std::printf ("  1.3.0 (pitch tracker + Krumhansl-Kessler 1982): %s\n", name (old.first, old.second).toRawUTF8());
+        // the running "Detected" display while the song plays (it forgets with a ~60 s time constant)
+        {
+            vs::ChromaAnalyzer run; run.prepare (fs);
+            std::printf ("  running display:");
+            for (size_t pos = 0; pos < x.size(); pos += 512)
+            {
+                const int n = (int) std::min<size_t> (512, x.size() - pos);
+                run.push (x.data() + pos, n);
+                run.decay (std::exp (-(double) n / (60.0 * fs)));
+                if ((pos / 512) % (size_t) std::lround (15.0 * fs / 512) == 0 && pos > 0)
+                {
+                    int rk; bool rm; float rc; run.detect (rk, rm, rc);
+                    std::printf ("  %.0fs %s%s %.0f%%", pos / fs, vs::Scales::noteName (rk), rm ? "m" : "", 100.0 * rc);
+                }
+            }
+            std::printf ("\n");
+        }
+        // the new detector on each 30-second stretch: does the song stay in one key?
+        std::printf ("  per 30 s:");
+        for (size_t s0 = 0; s0 < x.size(); s0 += (size_t) (30 * fs))
+        {
+            vs::ChromaAnalyzer seg; seg.prepare (fs);
+            const size_t s1 = std::min (x.size(), s0 + (size_t) (30 * fs));
+            for (size_t pos = s0; pos < s1; pos += 512) seg.push (x.data() + pos, (int) std::min<size_t> (512, s1 - pos));
+            int sk; bool sm; float sc; seg.detect (sk, sm, sc);
+            std::printf ("  %.0f-%.0f s %s%s", s0 / fs, s1 / fs, vs::Scales::noteName (sk), sm ? "m" : "");
+        }
+        std::printf ("\n");
+    }
+}
+
+// Key detection through the whole plugin (ANALYZE, then the Key / Scale it sets)
+namespace keydiag
+{
+    // a melody (index into melodies()) and/or a progression (index into progressions()), in 'tonic'
+    // (0 = C), optionally detuned (semitones; -0.32 = A at 432 Hz)
+    inline std::vector<float> song (double fs, int tuneIndex, int progIndex, int tonic, double detune = 0.0, double seconds = 0.0)
+    {
+        const auto tunes = melodies();
+        const auto progs = progressions();
+        Rng rng (5);
+        std::vector<Note> mel; double t = 0.3;
+        if (tuneIndex >= 0)
+        {
+            const auto& tu = tunes[(size_t) tuneIndex];
+            const int shift = ((tonic - tu.tonic) % 12 + 12) % 12;
+            while (seconds <= 0.0 ? mel.empty() : t < seconds - 1.0)
+                for (auto [m, beats] : tu.notes)
+                {
+                    int mm = m + shift; if (mm > 74) mm -= 12;
+                    mel.push_back ({ t, beats * 0.42 - 0.04, mm + detune + 0.15 * rng.bip() });
+                    t += beats * 0.42;
+                }
+        }
+        const double total = tuneIndex < 0 && seconds <= 0.0 ? 16.0 : std::max (seconds, t + 0.5);
+        auto x = voice (fs, mel, total, 20.0, 0.25);
+        if (progIndex >= 0)
+        {
+            const auto& pr = progs[(size_t) progIndex];
+            std::vector<Note> ch; int ci = 0;
+            for (double time = 0.2; time < total - 0.5; time += 4 * 0.42, ++ci)
+            {
+                const auto [root, minorChord] = pr.chords[(size_t) (ci % (int) pr.chords.size())];
+                const int r = 48 + ((root + tonic) % 12);
+                for (int iv : { 0, minorChord ? 3 : 4, 7 }) ch.push_back ({ time, 4 * 0.42 - 0.1, r + 12 + iv + detune });
+                ch.push_back ({ time, 4 * 0.42 - 0.1, r - 12 + (r - 12 < 36 ? 12 : 0) + detune });
+            }
+            const auto bed = voice (fs, ch, total, 0.0, 0.10);
+            for (size_t i = 0; i < x.size(); ++i) x[i] += bed[i];
+        }
+        return x;
+    }
+}
+
+void testKeyDetection()
+{
+    using namespace keydiag;
+    std::printf ("\n-- key detection (ANALYZE, USE DETECTED) --\n");
+    const double fs = 48000.0;
+    struct Case { const char* what; int tune, prog, tonic; bool minor; double detune; bool track; };
+    const Case cases[] = {
+        { "a song in C whose verse leans on D, F and A (1.3.0 said D minor)", 4, 0, 0, false, 0.0, false },
+        { "Greensleeves over i-iv-V-i in E minor", 5, 4, 4, true, 0.0, false },
+        { "a pop song in Bb tuned to A = 432 Hz", 0, 0, 10, false, -0.32, false },
+        { "chords alone (I-IV-V-I in A), Track mode, pitch correction off", -1, 2, 9, false, 0.0, true },
+    };
+    juce::String rows;
+    for (const auto& c : cases)
+    {
+        Rig r (fs, c.track, [&] (VocalStudioAudioProcessor& p) { set (p, IDs::pitchStrength, 0); if (c.track) set (p, IDs::pitchOn, 0); });
+        r.p->startAnalyze();
+        r.run (song (fs, c.tune, c.prog, c.tonic, c.detune));
+        r.p->stopAnalyzeAndApply();
+        const int key = (int) r.p->apvts.getRawParameterValue (IDs::key)->load();
+        const int scale = (int) r.p->apvts.getRawParameterValue (IDs::scale)->load();
+        const juce::String got = juce::String (vs::Scales::noteName (key)) + (scale == 2 ? " minor" : " major");
+        const juce::String want = juce::String (vs::Scales::noteName (c.tonic)) + (c.minor ? " minor" : " major");
+        note (juce::String (c.what) + ": " + got);
+        check (key == c.tonic && scale == (c.minor ? 2 : 1), juce::String ("detects ") + want + " in " + c.what);
+        rows << "| " << c.what << " | " << want << " | " << got << " |\n";
+    }
+    // a solo voice is harder (no chords or bass): "Mary Had a Little Lamb" in all 12 keys. 1.3.0 read it
+    // as the relative minor in every key; now a solo voice is recognized and its sung notes decide
+    {
+        int right = 0, unclear = 0, wrong = 0;
+        for (int k = 0; k < 12; ++k)
+        {
+            Rig r (fs, true, [] (VocalStudioAudioProcessor& p) { set (p, IDs::pitchOn, 0); set (p, IDs::key, 0); set (p, IDs::scale, 0); });
+            r.p->startAnalyze();
+            r.run (song (fs, 2, -1, k));
+            r.p->stopAnalyzeAndApply();
+            const int key = (int) r.p->apvts.getRawParameterValue (IDs::key)->load();
+            const int scale = (int) r.p->apvts.getRawParameterValue (IDs::scale)->load();
+            if (scale == 0) ++unclear; else if (key == k && scale == 1) ++right; else ++wrong;
+        }
+        note ("Mary Had a Little Lamb, voice alone, in all 12 keys: " + juce::String (right) + " right, " + juce::String (unclear)
+              + " left unclear, " + juce::String (wrong) + " wrong");
+        check (wrong == 0 && right >= 10, "a solo melody in 12 keys: no wrong key, at least 10 right");
+        rows << "| Mary Had a Little Lamb, voice alone, in all 12 keys (1.3.0: the relative minor in every key) | 12 keys | "
+             << right << " right, " << unclear << " left unclear, " << wrong << " wrong |\n";
+    }
+    // the running "Detected" key follows the music: 40 s of a song in C, then 100 s of one in E minor
+    {
+        Rig r (fs, true, [] (VocalStudioAudioProcessor& p) { set (p, IDs::pitchOn, 0); });
+        r.run (song (fs, 0, 0, 0, 0.0, 40.0));
+        int k1; bool m1; float c1; r.p->detectedKey (k1, m1, c1);
+        r.run (song (fs, 6, 4, 4, 0.0, 100.0));
+        int k2; bool m2; float c2; r.p->detectedKey (k2, m2, c2);
+        note (juce::String ("running detection: after the song in C ") + vs::Scales::noteName (k1) + (m1 ? "m" : "")
+              + ", 100 s into the one in E minor " + vs::Scales::noteName (k2) + (m2 ? "m" : ""));
+        check (k1 == 0 && ! m1 && k2 == 4 && m2, "the running detected key follows a change of song within 100 s");
+    }
+    report << "## Key detection\n\nANALYZE on synthetic songs (sung melody, triads and bass), through the whole plugin. "
+              "The key is read from the input spectrum (harmonic pitch-class profile, tuning estimated) and matched "
+              "against Temperley's (2007) key profiles. `VocalTest --diag-key` compares methods over 408 tests in all 12 keys; `--diag-keyfile` reads recordings.\n\n"
+              "| Material | Key | Detected |\n|---|---|---|\n" << rows << "\n";
+}
+
 // --diag-load F...: open files with the standalone's loader; length, rate, channels, level, and the
 // largest difference from the first file (encode the same audio in several formats to compare them)
 void diagnoseLoad (const juce::StringArray& files)
@@ -1784,6 +2750,15 @@ void diagnoseLoad (const juce::StringArray& files)
 int main (int argc, char** argv)
 {
     juce::ScopedJuceInitialiser_GUI gui;
+    for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--diag-key") { diagnoseKey(); return 0; }
+    for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--diag-keyfile")
+    {
+        juce::StringArray f; for (int j = i + 1; j < argc; ++j) f.add (argv[j]);
+        diagnoseKeyFile (f); return 0;
+    }
+    for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--diag-natural") { diagnoseNatural(); return 0; }
+    for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--diag-defaults") { diagnoseDefaults(); return 0; }
+    for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--diag-labtone") { diagnoseLabTone(); return 0; }
     for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--diag-load")
     {
         juce::StringArray f; for (int j = i + 1; j < argc; ++j) f.add (argv[j]);
@@ -1812,6 +2787,8 @@ int main (int argc, char** argv)
     for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--only-consonant") { testConsonant(); return failures; }
     for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--only-blocks") { testBlockSizeIndependence(); return failures; }
     for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--only-file") { testFilePlayer(); testAnalyze(); return failures; }
+    for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--only-key") { testAnalyze(); testKeyDetection(); return failures; }
+    for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--only-natural") { testNaturalCorrection(); return failures; }
     for (int i = 1; i < argc; ++i) if (juce::String (argv[i]) == "--screenshot" && i + 1 < argc)
     {
         for (int j = 1; j < argc; ++j) if (juce::String (argv[j]) == "--reverb-off") gShotReverbOff = true;   // and the delay on
@@ -1831,10 +2808,12 @@ int main (int argc, char** argv)
     testDenoise();
     testSustainedNote();
     testRecovery();
+    testNaturalCorrection();
     testLabSignals();
     testSilenceAndBuzz();
     testAudioThread();
     testAnalyze();
+    testKeyDetection();
     testFilePlayer();
     testDelaySync();
     testStateAndModes();

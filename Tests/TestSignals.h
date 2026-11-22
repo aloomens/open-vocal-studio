@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <functional>
 
 namespace testsig
 {
@@ -71,6 +72,39 @@ inline std::vector<float> voice (double fs, const std::vector<Note>& notes, doub
             const double env = std::min ({ 1.0, t / 0.04, (nt.durSec - t) / 0.08 });
             out[(size_t) (s0 + i)] += (float) (level * std::max (0.0, env) * y);
         }
+    }
+    return out;
+}
+
+// A sung voice (the same glottal source and formants as voice()) whose pitch follows midiAt (t), a MIDI
+// note number that may be fractional and move freely (vibrato, scoops, drift, glides). NaN = silence;
+// sounding stretches fade in and out over about 15 ms.
+inline std::vector<float> voiceCurve (double fs, double totalSec, const std::function<double (double)>& midiAt,
+                                      double level = 0.25, uint32_t seed = 7)
+{
+    const int n = (int) (totalSec * fs);
+    std::vector<float> out ((size_t) n, 0.0f);
+    Rng rng (seed);
+    const double F[4] = { 700, 1220, 2600, 3500 }, B[4] = { 90, 110, 160, 250 }, A[4] = { 1.0, 0.6, 0.35, 0.2 };
+    Reson r[4];
+    for (int k = 0; k < 4; ++k) r[k].set (F[k], B[k], fs);
+    double phase = 0.0, lp = 0.0, env = 0.0, f0 = 220.0;
+    const double ec = 1.0 - std::exp (-1.0 / (0.005 * fs));
+    for (int i = 0; i < n; ++i)
+    {
+        const double m = midiAt (i / fs);
+        const bool on = ! std::isnan (m);
+        env += ec * ((on ? 1.0 : 0.0) - env);
+        if (on) f0 = 440.0 * std::pow (2.0, (m - 69.0) / 12.0);
+        phase += f0 / fs;
+        if (phase >= 1.0) phase -= 1.0;
+        const double op = 0.6;
+        double g = phase < op ? 0.5 * (1.0 - std::cos (kPi * phase / op)) : std::max (0.0, std::cos (kPi * (phase - op) / (2.0 * (1.0 - op))));
+        const double src = (g - lp) * env; lp = g;
+        const double asp = 0.02 * rng.gauss() * env;
+        double y = 0.0;
+        for (int k = 0; k < 4; ++k) y += A[k] * r[k].proc (src * 8.0 + asp);
+        out[(size_t) i] = (float) (level * y);
     }
     return out;
 }

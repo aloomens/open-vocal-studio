@@ -74,7 +74,8 @@ public:
     juce::String stopAnalyzeAndApply();          // returns a short report for the status line
     bool isAnalyzing() const { return spectral.isAnalyzing(); }
     double analyzeSeconds() const { return spectral.analyzedSeconds(); }
-    void detectedKey (int& key, bool& minor, float& confidence) const { pitch.keys.best (key, minor, confidence); }
+    void detectedKey (int& key, bool& minor, float& confidence) const { keyChroma.detect (key, minor, confidence); }
+    double keyHeardSeconds() const { return keyChroma.activeSeconds(); }   // music the key detector has heard (recent)
     bool detectedKeyUsable() const;              // a key detected with enough confidence to use
     bool applyDetectedKey();                     // sets Key and Scale; false (nothing changed) if none yet
     float currentMidi() const { return pitch.curMidi.load(); }
@@ -114,6 +115,8 @@ private:
     vs::RumbleFilter rumble;
     vs::Deplosive deplosive;
     vs::PitchCorrector pitch;
+    vs::ChromaAnalyzer keyChroma;            // key detection from the input spectrum (before the denoiser)
+    double keyFs = 0.0;
     vs::VocalEq eq;
     vs::Rider rider;
     vs::VocalCompressor comp;
