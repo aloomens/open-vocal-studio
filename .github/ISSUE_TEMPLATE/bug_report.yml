@@ -1,0 +1,67 @@
+name: Bug report
+description: Something in Open Vocal Studio doesn't work as it should
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The more of these you fill in, the faster it can be fixed.
+        For questions ("how do I...?"), please use [Discussions Q&A](https://github.com/aloomens/open-vocal-studio/discussions/categories/q-a) instead.
+  - type: input
+    id: version
+    attributes:
+      label: Open Vocal Studio version
+      description: Shown next to the title in the plugin window, for example v1.2.3.
+      placeholder: v1.2.3
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where does it happen?
+      options:
+        - VST3 plugin in a DAW
+        - Standalone app
+        - Both
+    validations:
+      required: true
+  - type: input
+    id: daw
+    attributes:
+      label: DAW and version
+      description: For the plugin, for example Cubase 14, Reaper 7.2, Ableton Live 12.
+      placeholder: Reaper 7.2
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+  - type: input
+    id: audio
+    attributes:
+      label: Sample rate and buffer size (if you know them)
+      placeholder: 48 kHz, 256 samples
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you heard or saw, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to make it happen
+      description: Which preset or settings, and what you did, step by step.
+      placeholder: |
+        1. Load the preset ...
+        2. Turn ... to ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, a short audio example, or your DAW's crash log help a lot. You can drag files in here.

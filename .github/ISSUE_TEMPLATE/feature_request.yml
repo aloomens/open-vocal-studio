@@ -1,0 +1,26 @@
+name: Feature request
+description: Suggest an idea or improvement for Open Vocal Studio
+title: "[Idea] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! You can also share it in [Discussions Ideas](https://github.com/aloomens/open-vocal-studio/discussions/categories/ideas), where others can upvote and add to it.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: The situation or problem, in your own words: what you're trying to achieve, and what's missing or awkward now.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: How you imagine it could work. Examples from other plugins are welcome.
+  - type: input
+    id: version
+    attributes:
+      label: Open Vocal Studio version you use (optional)
+      placeholder: v1.2.3

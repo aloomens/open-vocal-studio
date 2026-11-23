@@ -17,6 +17,13 @@ Open Vocal Studio is free software, released under the **GNU Affero General Publ
 
 It's built with JUCE (AGPLv3), the Steinberg VST3 and ASIO SDKs (GPLv3) and the DeepFilterNet3 model (MIT / Apache-2.0); see [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). Click the **OPEN VOCAL STUDIO** title in the plugin to see the license notice.
 
+## Help & feedback
+
+- **Questions** ("how do I...?"): [Discussions Q&A](https://github.com/aloomens/open-vocal-studio/discussions/categories/q-a).
+- **Ideas and feature requests:** [Discussions Ideas](https://github.com/aloomens/open-vocal-studio/discussions/categories/ideas), where others can upvote them, or a [feature request](https://github.com/aloomens/open-vocal-studio/issues/new/choose).
+- **Problems:** a [bug report](https://github.com/aloomens/open-vocal-studio/issues/new/choose). Please include the Open Vocal Studio version (next to the title), your DAW, your Windows version and the steps that show the problem.
+- **Email:** [openstudio.plugins@gmail.com](mailto:openstudio.plugins@gmail.com), for anything, especially if you don't have a GitHub account.
+
 ## Quick start
 
 1. Insert Open Vocal Studio on a vocal track (mono or stereo; it outputs stereo).
