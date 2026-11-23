@@ -1,5 +1,5 @@
 name: Feature request
-description: Suggest an idea or improvement for Open Vocal Studio
+description: "Suggest an idea or improvement for Open Vocal Studio"
 title: "[Idea] "
 labels: ["enhancement"]
 body:
@@ -10,17 +10,17 @@ body:
   - type: textarea
     id: problem
     attributes:
-      label: What would you like to do?
-      description: The situation or problem, in your own words: what you're trying to achieve, and what's missing or awkward now.
+      label: "What would you like to do?"
+      description: "The situation or problem in your own words. What are you trying to achieve, and what's missing or awkward now?"
     validations:
       required: true
   - type: textarea
     id: idea
     attributes:
-      label: Your idea
-      description: How you imagine it could work. Examples from other plugins are welcome.
+      label: "Your idea"
+      description: "How you imagine it could work. Examples from other plugins are welcome."
   - type: input
     id: version
     attributes:
-      label: Open Vocal Studio version you use (optional)
+      label: "Open Vocal Studio version you use (optional)"
       placeholder: v1.2.3
