@@ -6,6 +6,6 @@ contact_links:
   - name: Share an idea
     url: https://github.com/aloomens/open-vocal-studio/discussions/categories/ideas
     about: Suggest a feature and let others upvote it.
-  - name: Email
-    url: mailto:openstudio.plugins@gmail.com
-    about: No GitHub account? Write to openstudio.plugins@gmail.com.
+  - name: Email (no GitHub account needed)
+    url: https://aloomens.github.io/open-vocal-studio/#help
+    about: Write to openstudio.plugins@gmail.com.
