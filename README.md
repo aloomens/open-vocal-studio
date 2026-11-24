@@ -1,6 +1,6 @@
-# Open Vocal Studio 1.3.1 (VST3 + standalone)
+# Open Vocal Studio 1.3.2 (VST3 + standalone)
 
-A complete lead-vocal channel for Windows in one plugin. It cleans up the recording (noise, room, plosives), corrects the pitch naturally, tames resonances, sibilance and harshness, sets the tone, controls the dynamics and adds a plate or room reverb and a short delay synced to your DAW.
+A complete lead-vocal channel for Windows in one plugin. It cleans up the recording (noise, room, plosives), corrects the pitch naturally, tames resonances, sibilance and harshness, sets the tone, controls the dynamics and adds a plate or room reverb and a short delay synced to your DAW. A Linux beta is also available (see [Linux (beta)](#linux-beta)).
 
 ![Open Vocal Studio: the plugin window](docs/screenshot.png)
 
@@ -15,13 +15,14 @@ Open Vocal Studio is free software, released under the **GNU Affero General Publ
 - **If you change it and share your version**, your changes must be released under the same license.
 - **There is no warranty.** See the license for the exact terms.
 
-It's built with JUCE (AGPLv3), the Steinberg VST3 and ASIO SDKs (GPLv3) and the DeepFilterNet3 model (MIT / Apache-2.0); see [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). Click the **OPEN VOCAL STUDIO** title in the plugin to see the license notice.
+It's built with JUCE (AGPLv3), the Steinberg VST3 and ASIO SDKs (GPLv3), on Linux the LV2 SDK (ISC), and the DeepFilterNet3 model (MIT / Apache-2.0); see [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt). Click the **OPEN VOCAL STUDIO** title in the plugin to see the license notice and the contact for questions, ideas and problems.
 
 ## Help & feedback
 
 - **Questions** ("how do I...?"): [Discussions Q&A](https://github.com/aloomens/open-vocal-studio/discussions/categories/q-a).
 - **Ideas and feature requests:** [Discussions Ideas](https://github.com/aloomens/open-vocal-studio/discussions/categories/ideas), where others can upvote them, or a [feature request](https://github.com/aloomens/open-vocal-studio/issues/new/choose).
-- **Problems:** a [bug report](https://github.com/aloomens/open-vocal-studio/issues/new/choose). Please include the Open Vocal Studio version (next to the title), your DAW, your Windows version and the steps that show the problem.
+- **Problems:** a [bug report](https://github.com/aloomens/open-vocal-studio/issues/new/choose). Please include the Open Vocal Studio version (next to the title), your DAW, your Windows (or Linux) version and the steps that show the problem.
+- **Linux beta:** tell us how it works in the [Linux beta discussion](https://github.com/aloomens/open-vocal-studio/discussions).
 - **Email:** [openstudio.plugins@gmail.com](mailto:openstudio.plugins@gmail.com), for anything, especially if you don't have a GitHub account.
 
 ## Quick start
@@ -31,6 +32,35 @@ It's built with JUCE (AGPLv3), the Steinberg VST3 and ASIO SDKs (GPLv3) and the 
 3. Play 10–30 seconds of the vocal with **ANALYZE** on, then click it again. It sets the tone EQ to match a polished vocal curve and sets the key and scale for pitch correction.
 4. Use the **PROCESSED | ORIGINAL** switch at the top to compare. The lit button is what you hear: PROCESSED (green) is Open Vocal Studio's sound, ORIGINAL (gold) is the untouched input. The original is level-matched, so louder never fools you into thinking it's better.
 5. In the standalone app you can also open a recording, play it through Open Vocal Studio and save it processed (see **FILE** below).
+
+## Linux (beta)
+
+An experimental Linux build (64-bit Intel/AMD) is published as a separate **pre-release** on the [Releases](https://github.com/aloomens/open-vocal-studio/releases) page: `OpenVocalStudio-<version>-linux-x64-beta.zip`. It is the same program built natively for Linux, as a VST3 plugin, an LV2 plugin and a standalone app. It passes the same automated tests as the Windows build and loads in Ardour, but few people have tried it yet. Please report how it works for you in the Linux beta discussion or by email.
+
+- **Needs** glibc 2.38 or newer (Ubuntu 24.04, Debian 13, Fedora 39, Linux Mint 22 or later), X11 or XWayland, and ALSA, JACK or PipeWire.
+- **Install:** unzip it and run `./install.sh`, which copies the plugins to `~/.vst3` and `~/.lv2`, or copy the two folders there yourself. The app runs from anywhere. The INSTALL.txt in the zip has the details.
+- **On Linux:**
+  - the standalone app's file player reads MP3 with JUCE's own decoder; WAV, AIFF, FLAC and Ogg work as on Windows;
+  - the LV2 has a fixed stereo input, and your DAW feeds a mono track into it;
+  - the neural denoiser uses a little more CPU than on Windows (about 11 % of one core in Mix mode in a test, against 8 %).
+- **Build it yourself** from the source zip (Ubuntu/Debian package names):
+
+```sh
+sudo apt install build-essential cmake ninja-build pkg-config libasound2-dev libjack-jackd2-dev \
+  libfreetype-dev libfontconfig1-dev libx11-dev libxcomposite-dev libxcursor-dev libxext-dev \
+  libxinerama-dev libxrandr-dev libxrender-dev libglu1-mesa-dev mesa-common-dev
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build build
+sh Tools/package-linux.sh    # optional: makes the zip in dist/
+```
+
+## What's new in 1.3.2
+
+- **Linux beta:** a native Linux build with VST3, LV2 and the standalone app, published as a separate pre-release (see [Linux (beta)](#linux-beta)). The Windows download is unchanged apart from the points below.
+- **About box:** it now gives the contact for questions, ideas and problems: openstudio.plugins@gmail.com or GitHub Discussions.
+- **Plugin info:** DAWs that show a plugin's vendor details now list the website and the contact email.
+- **Building from source:** the `DfnCheck` developer test (Windows-only) is skipped on other systems, so the source zip builds on Linux as it is.
+- **Tests:** `PluginHostTest` also checks that the editor opens, and on Linux tests the LV2 as well as the VST3.
+- No change to the sound; projects and presets load as before. A THE_LAB run on 1.3.2 gives the same numbers as on 1.3.1.
 
 ## What's new in 1.3.1
 
@@ -108,7 +138,7 @@ All of this is by design: making those runs pass would make the denoiser worse a
 
 **To measure the channel itself, set Denoise and Doubler to 0** (Doubler is 0 in every preset except Pop Lead). That's how every clean run below was made:
 
-- 1.2.5, both modes, pitch correction on or off; 1.2.6 and 1.3.0 in Mix mode; 1.3.1 in Mix mode with pitch correction on or off and in Track mode with it on: Stress GOOD, Software GOOD, 0 extremes failures;
+- 1.2.5, both modes, pitch correction on or off; 1.2.6 and 1.3.0 in Mix mode; 1.3.1 in Mix mode with pitch correction on or off and in Track mode with it on; 1.3.2 in Mix mode: Stress GOOD, Software GOOD, 0 extremes failures;
 - exact latency and bypass;
 - identical output at every buffer size;
 - sample rates within 0.3 dB.
@@ -334,6 +364,8 @@ Also:
 - `PluginHostTest.exe "…\Open Vocal Studio.vst3"` loads the finished VST3 the way a DAW does.
 
 ## Building
+
+On Linux, see [Linux (beta)](#linux-beta) for the packages and commands; the rest of this section is for Windows.
 
 You need Visual Studio 2022 (Build Tools) and CMake 3.22 or newer. Unpack the source to a short path such as `C:\src`, because deep folders run into Windows' 260-character path limit.
 

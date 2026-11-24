@@ -1,0 +1,74 @@
+OPEN VOCAL STUDIO {VERSION} - Linux x86-64 (BETA)
+=================================================
+
+This is an experimental Linux build. It is the same Open Vocal Studio as the
+Windows release, built natively for Linux. It passes the full automated test
+suite and loads in Ardour, but it has not yet been tried widely on real Linux
+systems. Please tell us how it works for you (see "Feedback" below).
+
+Contents
+--------
+  VST3/Open Vocal Studio.vst3        The VST3 plugin (a folder - keep it whole)
+  LV2/Open Vocal Studio.lv2          The LV2 plugin (a folder - keep it whole)
+  Standalone/Open Vocal Studio       The standalone app (runs from anywhere)
+  install.sh                         Copies both plugins into your home folder
+  README.md                          Full manual: signal chain, every control, tests
+  MEASUREMENTS.md                    Measured latency, nulls, true peak, what each part does
+  LICENSE.txt                        GNU Affero General Public License version 3
+  THIRD-PARTY-NOTICES.txt            Licenses for included components (and the files named there)
+
+Requirements
+------------
+64-bit Intel/AMD Linux with glibc 2.38 or newer (Ubuntu 24.04, Debian 13,
+Fedora 39, Linux Mint 22 or later), X11 or XWayland, and ALSA, JACK or
+PipeWire for audio. The plugins work in any VST3 or LV2 host, for example
+Ardour, Reaper, Bitwig Studio, Carla or Qtractor.
+
+Install the plugins
+-------------------
+Option A: open a terminal in this folder and run
+    ./install.sh
+It copies the plugins to ~/.vst3 and ~/.lv2 (no administrator rights needed)
+and replaces an older version if there is one.
+
+Option B: copy the folders by hand:
+    "Open Vocal Studio.vst3"  into  ~/.vst3/
+    "Open Vocal Studio.lv2"   into  ~/.lv2/
+
+Then rescan plugins in your DAW and insert Open Vocal Studio on your lead
+vocal track. It reports its latency (about 167 ms in Mix mode, which your DAW
+compensates; 6 ms in Track mode, 55 ms with pitch correction on). Use either
+the VST3 or the LV2, not both on one track: they sound the same.
+
+Use the standalone app
+----------------------
+Run Standalone/Open Vocal Studio (double-click it, or start it from a
+terminal). If your file manager opens it as a file, right-click it and make
+it executable, or run: chmod +x "Standalone/Open Vocal Studio"
+  1. Choose your audio input and output under Options > Audio/MIDI Settings...
+     (ALSA "default" goes through PulseAudio/PipeWire; or use JACK).
+  2. Sing through it with LIVE lit, or use the FILE strip: Open... a WAV,
+     AIFF, FLAC, MP3 or Ogg file, PLAY it, and Save Processed... to write it
+     as a 24-bit WAV.
+  3. Use Track mode while you sing live (low latency), Mix mode for files.
+
+Feedback
+--------
+Please tell us your Linux distribution, your DAW, VST3 or LV2, and what
+worked or didn't, in the "Linux beta" discussion:
+    https://github.com/aloomens/open-vocal-studio/discussions
+or by email: openstudio.plugins@gmail.com
+
+License
+-------
+Open Vocal Studio is free software under the GNU Affero General Public
+License version 3 (LICENSE.txt). Copyright (C) 2026 Al Oomens.
+You may use it for anything and share it freely. When you share it, pass on
+this zip together with the source code zip
+(OpenVocalStudio-{VERSION}-source.zip). It comes with NO WARRANTY.
+Click the OPEN VOCAL STUDIO title in the app or plugin for the license notice.
+
+Uninstall
+---------
+Delete ~/.vst3/Open Vocal Studio.vst3, ~/.lv2/Open Vocal Studio.lv2 and the
+app. The app keeps its audio settings in ~/.config/Open Vocal Studio.settings.

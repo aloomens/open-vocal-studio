@@ -51,7 +51,7 @@ $src = Join-Path $dist "$file-$ver-source"
 $szip = Join-Path $dist "$file-$ver-source.zip"
 if (Test-Path $src) { Remove-Item -Recurse -Force $src }
 New-Item -ItemType Directory -Force $src | Out-Null
-foreach ($f in 'CMakeLists.txt', 'README.md', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt', '.gitignore') { if (Test-Path "$root\$f") { Copy-Item "$root\$f" $src } }
+foreach ($f in 'CMakeLists.txt', 'README.md', 'LICENSE.txt', 'THIRD-PARTY-NOTICES.txt', '.gitignore', '.gitattributes') { if (Test-Path "$root\$f") { Copy-Item "$root\$f" $src } }
 foreach ($d in 'Source', 'Tests', 'Resources', 'Tools', 'Reports', 'docs') { Copy-Item -Recurse "$root\$d" "$src\$d" }
 New-Item -ItemType Directory -Force "$src\external" | Out-Null
 Copy-Item -Recurse "$root\external\asiosdk" "$src\external\asiosdk"

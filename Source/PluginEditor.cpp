@@ -542,8 +542,9 @@ String VocalStudioAudioProcessorEditor::aboutText()
            "Affero General Public License (LICENSE.txt, included with the program) for more details.\n\n"
            "The source code is distributed alongside the program (" + String (VS_PRODUCT_NAME).removeCharacters (" ")
            + "-" VS_VERSION "-source.zip).\n\n"
+           "Questions, ideas, problems: openstudio.plugins@gmail.com or GitHub Discussions.\n\n"
            "Noise removal uses the DeepFilterNet3 model (Hendrik Schroeter et al., MIT / Apache-2.0). "
-           "Built with JUCE (AGPLv3) and the Steinberg VST3 and ASIO SDKs (GPLv3). "
+           "Built with JUCE (AGPLv3), the Steinberg VST3 and ASIO SDKs (GPLv3) and, on Linux, the LV2 SDK (ISC). "
            "VST and ASIO are trademarks of Steinberg Media Technologies GmbH. See THIRD-PARTY-NOTICES.txt.";
 }
 

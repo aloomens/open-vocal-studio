@@ -118,8 +118,33 @@ standalone app's file player)
   HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
   OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-  MP3 files are read through Windows' own Windows Media components (wmvcore.dll), which
-  are part of Windows, not of Open Vocal Studio.
+  On Windows, MP3 files are read through Windows' own Windows Media components
+  (wmvcore.dll), which are part of Windows, not of Open Vocal Studio. On Linux they are
+  read by JUCE's own MP3 decoder, which is part of JUCE (see above).
+
+LV2 SDK (as bundled with JUCE 8.0.4; Linux LV2 plugin only)
+  lv2:                      Copyright 2006-2012 Steve Harris, David Robillard. Based on
+                            LADSPA, Copyright 2000-2002 Richard W.E. Furse, Paul Barton-Davis,
+                            Stefan Westerfeld.
+  lilv, serd, sord:         Copyright 2011-2021 David Robillard <d@drobilla.net>
+  sratom:                   Copyright 2012-2021 David Robillard <d@drobilla.net>
+  Used under the ISC license:
+    Permission to use, copy, modify, and/or distribute this software for any
+    purpose with or without fee is hereby granted, provided that the above
+    copyright notice and this permission notice appear in all copies.
+
+    THIS SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+    WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+    MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+    ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+    ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
+Linux system libraries
+  On Linux the plugin and app use the system's own ALSA, JACK, FreeType, Fontconfig
+  and X11 libraries, which are installed by the Linux distribution and not included
+  in the download.
 
 Code from Clean Tone Studio (same author, same license)
   Smoothing, biquad, FDN reverb and smooth delay building blocks.
